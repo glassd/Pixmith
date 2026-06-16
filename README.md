@@ -1,17 +1,29 @@
 # Pixmith
 
-**Generate images from your MCP client (e.g. Claude) using the OpenAI Codex CLI — on your ChatGPT subscription, no API key required.**
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A518-339933?logo=node.js&logoColor=white)](https://nodejs.org)
+[![MCP](https://img.shields.io/badge/MCP-stdio_server-6E56CF)](https://modelcontextprotocol.io)
+[![Powered by Codex](https://img.shields.io/badge/powered%20by-OpenAI%20Codex-412991?logo=openai&logoColor=white)](https://openai.com/codex)
+
+**Generate images from your MCP client (e.g. Claude) using the OpenAI Codex CLI — on your ChatGPT subscription, no image API key required.**
+
+Pixmith is a small local [MCP](https://modelcontextprotocol.io) server that exposes a
+single `generate_image` tool to any MCP client (such as Claude Desktop or Claude Code).
+Under the hood it drives the **OpenAI Codex CLI** and its built-in `$imagegen` skill
+(`gpt-image-2`), then hands the finished PNG back to your client — both as a file path
+and inline. Ask Claude for "a watercolour fox at dawn, 1536×1024" and a real image
+lands on disk seconds later.
+
+**Why Pixmith?** Codex can be signed in with your **ChatGPT account**, so image
+generation runs against your existing ChatGPT plan instead of a separate, metered image
+API key. If you already pay for ChatGPT, you get image generation in Claude for no extra
+cost — and Pixmith works just as well if your Codex is configured with an OpenAI API key
+instead.
 
 > ℹ️ **Unofficial project.** Pixmith is an independent, community tool. It is **not
 > affiliated with, endorsed by, or supported by OpenAI or Anthropic.** "Codex",
 > "ChatGPT", "OpenAI", "Claude", and "Anthropic" are trademarks of their respective
 > owners.
-
-Pixmith is a small local [MCP](https://modelcontextprotocol.io) server. It exposes a
-single `generate_image` tool to an MCP client (such as Claude Desktop or Claude Code).
-Under the hood it drives the **OpenAI Codex CLI** and its built-in `$imagegen` skill
-(`gpt-image-2`). Because Codex can be signed in with your **ChatGPT account**,
-generation can run on your ChatGPT plan instead of a paid API key.
 
 > ⚠️ When using ChatGPT-subscription auth, image generation counts toward your
 > ChatGPT plan's usage limits.
