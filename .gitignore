@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Generated images (default output dir + any local overrides)
+images/
+output/
+
+# Env / local config
+.env
+.env.*
+!.env.example
+
+# Logs / temp
+*.log
+.last-message.txt
+.stderr.txt
+
+# OS cruft
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Never commit anything resembling secrets / Codex auth
+**/auth.json
+*.pem
