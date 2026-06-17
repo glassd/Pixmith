@@ -130,7 +130,14 @@ default.
 
 ---
 
-## The `generate_image` tool
+## The tools
+
+A generation takes ~50–90s — longer than the per-request timeout many MCP clients
+(e.g. Claude Desktop) enforce, and some clients won't extend that timeout. So
+Pixmith never blocks on the long call. It exposes **two tools** and the assistant
+uses them together automatically:
+
+### `generate_image` — starts a job, returns instantly
 
 | Param        | Type   | Required | Description                                                                                 |
 |--------------|--------|----------|---------------------------------------------------------------------------------------------|
@@ -138,8 +145,20 @@ default.
 | `size`       | string | ❌       | `auto`, a shortcut `1K`/`2K`/`4K`, or explicit `WIDTHxHEIGHT` (e.g. `1024x1024`, `1536x1024`). Each edge 256–3840. Default `1024x1024`. |
 | `output_dir` | string | ❌       | Absolute directory to save into. Defaults to Pixmith's `images/` folder.                   |
 
-Returns a text block (saved path, size, byte count) and, when the file is small
-enough, the PNG inline as MCP image content.
+Returns immediately with a `job_id` (it does **not** return the image).
+
+### `get_image_result` — fetches the finished image
+
+| Param    | Type   | Required | Description                          |
+|----------|--------|----------|--------------------------------------|
+| `job_id` | string | ✅       | The `job_id` from `generate_image`.  |
+
+Waits up to ~25s, then returns. While the image is still rendering it returns
+`status: running` — the assistant simply calls it again with the same `job_id`
+(usually 2–4 times) until `status: done`, at which point it returns the saved
+absolute path and, when small enough, the PNG inline. **Every call is short, so
+no single request trips a client-side timeout.** You don't manage this yourself —
+just ask for an image and the assistant drives both tools.
 
 ---
 
@@ -149,6 +168,7 @@ enough, the PNG inline as MCP image content.
 |----------------------------|------------------------------------------------------|------------------------------------------------------------------|
 | `CODEX_BIN`                | auto-detected, else `codex` on `PATH`                | Path to the Codex binary. Set this if auto-detection misses (e.g. `CODEX_BIN=C:/Users/you/AppData/Local/Programs/codex/codex.exe`). |
 | `PIXMITH_SANDBOX`          | `workspace-write`                                    | Sandbox policy passed to `codex exec`. Override only if your platform needs a different policy (e.g. `read-only`, `danger-full-access`). |
+| `PIXMITH_POLL_WAIT_MS`     | `25000` (25s)                                        | Max wait per `get_image_result` call. Lower it if your MCP client's request timeout is under ~30s. |
 | `PIXMITH_OUTPUT_DIR`       | `<project>/images`                                   | Default output directory for generated PNGs.                    |
 | `CODEX_HOME`               | `~/.codex`                                            | Codex home (used to locate the backup `generated_images/` copy). |
 | `PIXMITH_TIMEOUT_MS`       | `300000` (5 min)                                     | Hard timeout per generation.                                    |
@@ -227,13 +247,15 @@ Or add the same `mcpServers` block above to a project-level `.mcp.json`.
 | `[not_signed_in]`                    | Sign in to Codex (ChatGPT account) or configure an API key, then retry.     |
 | `[timeout]`                          | Large image or slow service — raise `PIXMITH_TIMEOUT_MS`.                    |
 | `[generation_failed]` / `[no_output]`| Codex ran but produced nothing; see the `Detail:` stderr tail in the error. |
-| Client times out (~60s) but the image still appears | Each generation takes ~50–90s. Pixmith streams MCP **progress notifications** so compliant clients keep the request alive; if your client times out anyway, raise its request timeout. The image is almost always still produced — check `output_dir` (and `$CODEX_HOME/generated_images/`). |
+| Client times out during generation | Shouldn't happen: `generate_image` returns instantly and `get_image_result` waits at most ~25s per call. If your client's request timeout is under ~30s, lower `PIXMITH_POLL_WAIT_MS` to match. The PNG is still saved either way — check `output_dir` (and `$CODEX_HOME/generated_images/`). |
+| `[unknown_job]` from get_image_result | The job_id expired (>15 min) or generation was never started — call `generate_image` first, then poll with the returned job_id. |
 
 > **A note on timing.** A generation is an agent session, not a raw API call, so it
-> takes ~50–90s. Pixmith emits progress notifications throughout; MCP clients that
-> honor them (e.g. Claude) reset their per-request timeout on each one, so the call
-> completes normally. Some clients cap the total time regardless — if so, the PNG is
-> still saved to disk even when the client reports a timeout.
+> takes ~50–90s. To stay under client request timeouts, Pixmith never blocks on the
+> long call: `generate_image` starts a background job and returns a `job_id`
+> immediately, and `get_image_result` retrieves it with a short bounded wait. The
+> assistant polls a few times until it's done — no single request runs long enough
+> to time out, regardless of how the client handles progress notifications.
 
 ---
 
