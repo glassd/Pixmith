@@ -51,7 +51,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [TOOL],
 }));
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   if (request.params.name !== TOOL.name) {
     return errorResult(`Unknown tool: ${request.params.name}`);
   }
@@ -61,13 +61,46 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const size = args.size;
   const outputDir = args.output_dir;
 
+  // Image generation takes ~50–90s. Most MCP clients enforce a per-request
+  // timeout (often ~60s) but reset it whenever they receive a progress
+  // notification. So we stream progress while Codex runs — both forwarding
+  // Codex's own output and a steady heartbeat for the quiet stretches — to keep
+  // the client's timeout from firing on a generation that is actually working.
+  const progressToken = request.params?._meta?.progressToken;
+  let progressCount = 0;
+  const startedAt = Date.now();
+
+  const sendProgress = (message) => {
+    if (progressToken === undefined || typeof extra?.sendNotification !== "function") {
+      return;
+    }
+    progressCount += 1;
+    extra
+      .sendNotification({
+        method: "notifications/progress",
+        params: { progressToken, progress: progressCount, message },
+      })
+      .catch(() => {});
+  };
+
+  // Heartbeat: emit a clean progress message every few seconds so the client
+  // keeps the request alive even while Codex is silent. We deliberately do NOT
+  // forward raw Codex stderr here — it echoes our prompt and skill docs, which
+  // is noisy and misleading to a user. Full Codex output still goes to this
+  // process's stderr (below) for server-side debugging.
+  sendProgress("Starting Codex image generation…");
+  const heartbeat = setInterval(() => {
+    const secs = Math.round((Date.now() - startedAt) / 1000);
+    sendProgress(`Generating image on your ChatGPT subscription… ${secs}s elapsed (typically 50–90s).`);
+  }, 4000);
+
   try {
     const result = await generateImage({
       prompt,
       size,
       outputDir,
-      // stderr is Codex's progress stream; we keep it server-side (stderr of
-      // this process) so it never corrupts the stdio JSON-RPC channel.
+      // Codex streams progress to stderr. Mirror it to THIS process's stderr
+      // (never stdout — that is the JSON-RPC channel) for debugging only.
       onProgress: (line) => process.stderr.write(`[codex] ${line}\n`),
     });
 
@@ -113,6 +146,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return errorResult(`[${err.kind}] ${err.message}${detail}`);
     }
     return errorResult(`Unexpected error: ${err?.message || String(err)}`);
+  } finally {
+    clearInterval(heartbeat);
   }
 });
 

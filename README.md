@@ -194,6 +194,13 @@ Or add the same `mcpServers` block above to a project-level `.mcp.json`.
 | `[not_signed_in]`                    | Sign in to Codex (ChatGPT account) or configure an API key, then retry.     |
 | `[timeout]`                          | Large image or slow service — raise `PIXMITH_TIMEOUT_MS`.                    |
 | `[generation_failed]` / `[no_output]`| Codex ran but produced nothing; see the `Detail:` stderr tail in the error. |
+| Client times out (~60s) but the image still appears | Each generation takes ~50–90s. Pixmith streams MCP **progress notifications** so compliant clients keep the request alive; if your client times out anyway, raise its request timeout. The image is almost always still produced — check `output_dir` (and `$CODEX_HOME/generated_images/`). |
+
+> **A note on timing.** A generation is an agent session, not a raw API call, so it
+> takes ~50–90s. Pixmith emits progress notifications throughout; MCP clients that
+> honor them (e.g. Claude) reset their per-request timeout on each one, so the call
+> completes normally. Some clients cap the total time regardless — if so, the PNG is
+> still saved to disk even when the client reports a timeout.
 
 ---
 
