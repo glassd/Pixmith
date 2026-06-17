@@ -137,6 +137,40 @@ async function isPng(filePath) {
   }
 }
 
+/**
+ * Recover a PNG from base64 embedded in text (e.g. Codex's log/output stream).
+ * The image_gen result carries the image as base64, which always begins with
+ * "iVBORw0KGgo" (the base64 of the PNG magic header). On some platforms the file
+ * isn't written to disk and this base64 is the only copy of the image — so if no
+ * real PNG file appears, we decode it from the captured output ourselves.
+ * Returns the largest valid decoded PNG Buffer found, or null.
+ */
+function extractBase64Png(text) {
+  if (!text) return null;
+  const marker = "iVBORw0KGgo";
+  let best = null;
+  let from = 0;
+  for (;;) {
+    const idx = text.indexOf(marker, from);
+    if (idx === -1) break;
+    // base64 may be split across lines in a log; allow interleaved whitespace.
+    const m = text.slice(idx).match(/^[A-Za-z0-9+/=\r\n\t ]+/);
+    if (m) {
+      const b64 = m[0].replace(/[^A-Za-z0-9+/=]/g, "");
+      try {
+        const buf = Buffer.from(b64, "base64");
+        if (buf.length > 1024 && buf.subarray(0, 8).equals(PNG_MAGIC)) {
+          if (!best || buf.length > best.length) best = buf;
+        }
+      } catch {
+        /* not valid base64; keep scanning */
+      }
+    }
+    from = idx + marker.length;
+  }
+  return best;
+}
+
 function detectAuthFailure(stderr, stdout) {
   const hay = `${stderr}\n${stdout}`.toLowerCase();
   return (
@@ -277,31 +311,41 @@ export async function generateImage({ prompt, size, outputDir, onProgress } = {}
     }
   }
 
-  if (!sourcePng) {
-    // No new valid image appeared. Do NOT fall back to any pre-existing file —
-    // that would return a stale/duplicate image. Surface a clear failure.
-    const sawNonPng = newPngs.length > 0;
+  let finalPath = null;
+
+  if (sourcePng) {
+    // Normal path: copy the new image file into the requested destination.
+    try {
+      await fs.copyFile(sourcePng, targetPath);
+      finalPath = targetPath;
+    } catch {
+      finalPath = sourcePng; // fall back to returning the source path directly
+    }
+  } else {
+    // No real PNG file was written (seen on platforms where image_gen returns
+    // the image as base64 in its output rather than a file). Recover it by
+    // decoding the base64 from Codex's captured output and writing real bytes.
+    const recovered =
+      extractBase64Png(lastMessage) ||
+      extractBase64Png(stdout) ||
+      extractBase64Png(stderr);
+    if (recovered) {
+      await fs.writeFile(targetPath, recovered);
+      finalPath = targetPath;
+    }
+  }
+
+  if (!finalPath) {
     throw new PixmithError(
       "no_output",
-      `Codex exited with code ${code} but produced no new valid PNG in ${path.join(config.codexHome, "generated_images")}. ` +
-        (sawNonPng
-          ? "A new file appeared but it was not a valid image (its bytes are not a PNG). "
-          : "") +
+      `Codex exited with code ${code} but produced no valid PNG — none was written to ` +
+        `${path.join(config.codexHome, "generated_images")} and no base64 image was found in its output. ` +
         "The generation may have been refused or failed.",
       tail(stderr) || tail(stdout),
     );
   }
 
-  // Copy the new image into the requested destination under our unique filename.
-  let finalPath;
-  try {
-    await fs.copyFile(sourcePng, targetPath);
-    finalPath = targetPath;
-  } catch {
-    finalPath = sourcePng; // fall back to returning the source path directly
-  }
-
-  // Final guard: the file we return must be a non-empty, valid PNG.
+  // Final guard: the file we return must be a non-empty, valid PNG (never a log).
   const st = await fs.stat(finalPath);
   if (!st.size || !(await isPng(finalPath))) {
     throw new PixmithError(
@@ -316,7 +360,7 @@ export async function generateImage({ prompt, size, outputDir, onProgress } = {}
     size: sizeValue,
     sizeNote,
     bytes: st.size,
-    codexHomeCopy: path.resolve(sourcePng),
+    codexHomeCopy: sourcePng ? path.resolve(sourcePng) : null,
   };
 }
 
