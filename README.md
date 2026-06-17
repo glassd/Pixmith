@@ -1,5 +1,9 @@
 # Pixmith
 
+<p align="center">
+  <img src="assets/hero.png" alt="Pixmith — a wireframe hammer striking a glowing pixel on an anvil, sparks of light bursting outward" width="100%">
+</p>
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A518-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![MCP](https://img.shields.io/badge/MCP-stdio_server-6E56CF)](https://modelcontextprotocol.io)
