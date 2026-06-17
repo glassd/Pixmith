@@ -141,11 +141,17 @@ export async function generateImage({ prompt, size, outputDir, onProgress } = {}
     throw new PixmithError("bad_request", "`prompt` is required and must be a non-empty string.");
   }
 
-  // 1. Binary present?
-  if (!fssync.existsSync(config.codexBin)) {
+  // 1. Binary present? Only verify when CODEX_BIN looks like a filesystem path.
+  // A bare command name (e.g. "codex") is resolved on PATH by the OS, so we let
+  // spawn try it and surface an ENOENT as a binary_missing error below.
+  const looksLikePath =
+    path.isAbsolute(config.codexBin) ||
+    config.codexBin.includes("/") ||
+    config.codexBin.includes("\\");
+  if (looksLikePath && !fssync.existsSync(config.codexBin)) {
     throw new PixmithError(
       "binary_missing",
-      `Codex binary not found at "${config.codexBin}". Install the Codex desktop app, or set the CODEX_BIN environment variable to the correct path.`,
+      `Codex binary not found at "${config.codexBin}". Install the Codex CLI (or the Codex desktop app), or set the CODEX_BIN environment variable to its absolute path.\n\nLooked in:\n  ${config.codexCandidates.join("\n  ")}`,
     );
   }
 
@@ -166,21 +172,24 @@ export async function generateImage({ prompt, size, outputDir, onProgress } = {}
   const fullPrompt = buildPrompt(prompt.trim(), sizeValue, targetPath);
   const startMs = Date.now();
 
+  // Note: the prompt is passed via stdin (the "-" sentinel), NOT as a CLI arg.
+  // It's a large multi-line string and embedding it in an argv that may pass
+  // through a Windows shell (.cmd shims) is fragile; stdin avoids all quoting.
   const codexArgs = [
     "exec",
     "--skip-git-repo-check",
     "-s",
-    "workspace-write",
+    config.sandbox,
     "-C",
     destDir,
     "--add-dir",
     destDir,
     "--output-last-message",
     lastMsgPath,
-    fullPrompt,
+    "-", // read the prompt from stdin
   ];
 
-  const { stdout, stderr, code, timedOut } = await runCodex(codexArgs, onProgress);
+  const { stdout, stderr, code, timedOut } = await runCodex(codexArgs, fullPrompt, onProgress);
 
   // 4. Read Codex's final message (preferred source of truth).
   let lastMessage = "";
@@ -203,7 +212,7 @@ export async function generateImage({ prompt, size, outputDir, onProgress } = {}
   if (detectAuthFailure(stderr, stdout)) {
     throw new PixmithError(
       "not_signed_in",
-      "Codex is not signed in. Open the Codex desktop app and sign in with your ChatGPT account, then retry.",
+      "Codex is not signed in. Sign in to Codex with your ChatGPT account (open the Codex app, or run `codex login`), then retry.",
       tail(stderr),
     );
   }
@@ -264,21 +273,38 @@ function tail(s, n = 1200) {
   return s.length > n ? `…${s.slice(-n)}` : s;
 }
 
-/** Spawn codex, stream stderr to onProgress, enforce timeout. */
-function runCodex(args, onProgress) {
+/** Quote an argument for a Windows shell (cmd.exe) when spaces/quotes are present. */
+function winQuote(s) {
+  return /[\s"]/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s;
+}
+
+/**
+ * Spawn codex, feed the prompt via stdin, stream stderr to onProgress, enforce
+ * a timeout. Cross-platform: on Windows, `.cmd`/`.bat` shims (e.g. an npm-global
+ * `codex.cmd`) cannot be spawned directly, so we run them through a shell and
+ * quote the arguments. A native `codex.exe` (or any non-Windows binary) is
+ * spawned directly with no shell.
+ */
+function runCodex(args, promptStdin, onProgress) {
   return new Promise((resolve, reject) => {
+    const isWindows = process.platform === "win32";
+    const needsShell = isWindows && !/\.exe$/i.test(config.codexBin);
+
+    let command = config.codexBin;
+    let spawnArgs = args;
+    const opts = { stdio: ["pipe", "pipe", "pipe"], env: process.env };
+    if (needsShell) {
+      opts.shell = true;
+      command = winQuote(config.codexBin);
+      spawnArgs = args.map(winQuote);
+    }
+
     let child;
     try {
-      child = spawn(config.codexBin, args, {
-        stdio: ["ignore", "pipe", "pipe"],
-        env: process.env,
-      });
+      child = spawn(command, spawnArgs, opts);
     } catch (err) {
       reject(
-        new PixmithError(
-          "spawn_failed",
-          `Failed to launch Codex binary: ${err.message}`,
-        ),
+        new PixmithError("spawn_failed", `Failed to launch Codex: ${err.message}`),
       );
       return;
     }
@@ -291,6 +317,13 @@ function runCodex(args, onProgress) {
       timedOut = true;
       child.kill("SIGKILL");
     }, config.timeoutMs);
+
+    // Feed the prompt to Codex via stdin, then close it.
+    if (child.stdin) {
+      child.stdin.on("error", () => {}); // ignore EPIPE if codex exits early
+      child.stdin.write(promptStdin);
+      child.stdin.end();
+    }
 
     child.stdout.on("data", (d) => {
       stdout += d.toString();
@@ -306,12 +339,13 @@ function runCodex(args, onProgress) {
     });
     child.on("error", (err) => {
       clearTimeout(timer);
-      reject(
-        new PixmithError(
-          "spawn_failed",
-          `Codex process error: ${err.message}`,
-        ),
-      );
+      // ENOENT means the command (often a bare `codex` on PATH) wasn't found.
+      const kind = err.code === "ENOENT" ? "binary_missing" : "spawn_failed";
+      const msg =
+        err.code === "ENOENT"
+          ? `Could not find the Codex binary ("${config.codexBin}"). Install the Codex CLI and ensure it's on your PATH, or set CODEX_BIN to its absolute path.`
+          : `Codex process error: ${err.message}`;
+      reject(new PixmithError(kind, msg));
     });
     child.on("close", (code) => {
       clearTimeout(timer);

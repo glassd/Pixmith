@@ -1,12 +1,16 @@
+import fssync from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 /**
  * Central configuration for Pixmith, resolved from environment variables with
  * sensible defaults. Nothing here reads or exposes any Codex auth tokens.
+ *
+ * Everything here is cross-platform (macOS, Windows, Linux): paths are derived
+ * with the `path`/`url` modules and the Codex binary is auto-located across the
+ * common per-OS install locations, falling back to whatever `codex` is on PATH.
  */
-
-const DEFAULT_CODEX_BIN = "/Applications/Codex.app/Contents/Resources/codex";
 
 function envInt(name, fallback) {
   const raw = process.env[name];
@@ -15,17 +19,81 @@ function envInt(name, fallback) {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+function envStr(name, fallback) {
+  const raw = process.env[name];
+  return raw == null || raw.trim() === "" ? fallback : raw.trim();
+}
+
+const HOME = os.homedir();
+
+/**
+ * Candidate Codex binary locations per platform, tried in order. The first that
+ * exists wins; otherwise we fall back to the bare command name `codex` and let
+ * the OS resolve it on PATH (so a globally-installed CLI just works).
+ */
+function codexCandidates() {
+  if (process.platform === "win32") {
+    const localAppData = process.env.LOCALAPPDATA || path.join(HOME, "AppData", "Local");
+    const appData = process.env.APPDATA || path.join(HOME, "AppData", "Roaming");
+    const programFiles = process.env.ProgramFiles || "C:\\Program Files";
+    return [
+      path.join(localAppData, "Programs", "codex", "codex.exe"),
+      path.join(localAppData, "Programs", "Codex", "codex.exe"),
+      path.join(localAppData, "Programs", "@openai", "codex", "codex.exe"),
+      path.join(programFiles, "Codex", "codex.exe"),
+      path.join(appData, "npm", "codex.cmd"),
+      "codex.exe",
+    ];
+  }
+  if (process.platform === "darwin") {
+    return [
+      "/Applications/Codex.app/Contents/Resources/codex",
+      path.join(HOME, "Applications/Codex.app/Contents/Resources/codex"),
+      "/opt/homebrew/bin/codex",
+      "/usr/local/bin/codex",
+    ];
+  }
+  // linux and others
+  return [
+    "/usr/local/bin/codex",
+    "/usr/bin/codex",
+    path.join(HOME, ".local/bin/codex"),
+    path.join(HOME, "bin/codex"),
+  ];
+}
+
+/** Resolve the Codex binary: explicit env override, else first existing candidate, else PATH. */
+function resolveCodexBin() {
+  const override = envStr("CODEX_BIN", null);
+  if (override) return override;
+  for (const candidate of codexCandidates()) {
+    try {
+      if (path.isAbsolute(candidate) && fssync.existsSync(candidate)) return candidate;
+    } catch {
+      /* ignore and keep trying */
+    }
+  }
+  return "codex"; // rely on PATH
+}
+
 export const config = {
-  // Absolute path to the Codex binary (bundled with the Codex desktop app).
-  codexBin: process.env.CODEX_BIN || DEFAULT_CODEX_BIN,
+  // Path to the Codex binary, or a bare command resolved on PATH.
+  codexBin: resolveCodexBin(),
+  // Every candidate we considered — used to build a helpful "not found" error.
+  codexCandidates: codexCandidates(),
+
+  // Sandbox policy passed to `codex exec`. Configurable in case a platform/setup
+  // needs a different policy. Default matches what Codex supports everywhere.
+  sandbox: envStr("PIXMITH_SANDBOX", "workspace-write"),
 
   // Where images land by default when the caller does not pass output_dir.
+  // fileURLToPath keeps this correct on Windows (no leading-slash drive bug).
   defaultOutputDir:
     process.env.PIXMITH_OUTPUT_DIR ||
-    path.resolve(new URL("../images", import.meta.url).pathname),
+    path.resolve(fileURLToPath(new URL("../images", import.meta.url))),
 
   // CODEX_HOME holds generated_images/<session>/ig_*.png as a backup location.
-  codexHome: process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
+  codexHome: process.env.CODEX_HOME || path.join(HOME, ".codex"),
 
   // Hard timeout for a single generation, in milliseconds.
   timeoutMs: envInt("PIXMITH_TIMEOUT_MS", 5 * 60 * 1000),

@@ -71,17 +71,33 @@ Either way, Pixmith does not handle credentials directly.
 
 ## Prerequisites
 
+Pixmith runs on **macOS, Windows, and Linux**.
+
 - **The Codex CLI**, via one of:
-  - the **Codex desktop app** (bundles the `codex` binary, on macOS at
-    `/Applications/Codex.app/Contents/Resources/codex`), or
+  - the **Codex desktop app** (bundles the `codex` binary), or
   - a standalone `codex` binary on your `PATH`.
 - **Codex signed in** — either with your ChatGPT account *or* configured with an
   OpenAI API key (see above). Verify with `codex --version` and a quick
   `codex exec "hello"`.
 - **Node.js ≥ 18.**
 
-If your `codex` binary is not on `PATH` (e.g. the desktop-app bundle), set the
-`CODEX_BIN` environment variable to its absolute path (see below).
+### Finding the Codex binary
+
+Pixmith auto-detects the Codex binary in the common per-OS install locations and
+otherwise falls back to whatever `codex` is on your `PATH`. If auto-detection
+misses, set `CODEX_BIN` to the absolute path. To locate it:
+
+| OS      | Find it with             | Typical location                                                        |
+|---------|--------------------------|-------------------------------------------------------------------------|
+| macOS   | `which codex`            | `/Applications/Codex.app/Contents/Resources/codex` (desktop app bundle) |
+| Windows | `where codex` (cmd)      | `%LOCALAPPDATA%\Programs\codex\codex.exe`, or `%APPDATA%\npm\codex.cmd`  |
+| Linux   | `which codex`            | `/usr/local/bin/codex`, `~/.local/bin/codex`                            |
+
+> **Windows note:** both a native `codex.exe` and an npm-installed `codex.cmd`
+> shim work — Pixmith handles each. If you point `CODEX_BIN` at a `.cmd`/`.bat`,
+> Pixmith runs it through the shell automatically. Use a full absolute path, and
+> in JSON configs either use forward slashes (`C:/Users/you/...`) or escaped
+> backslashes (`C:\\Users\\you\\...`).
 
 ---
 
@@ -131,7 +147,8 @@ enough, the PNG inline as MCP image content.
 
 | Variable                   | Default                                              | Purpose                                                          |
 |----------------------------|------------------------------------------------------|------------------------------------------------------------------|
-| `CODEX_BIN`                | `/Applications/Codex.app/Contents/Resources/codex`   | Absolute path to the Codex binary. Set this if `codex` lives elsewhere or is on your `PATH` (e.g. `CODEX_BIN=codex`). |
+| `CODEX_BIN`                | auto-detected, else `codex` on `PATH`                | Path to the Codex binary. Set this if auto-detection misses (e.g. `CODEX_BIN=C:/Users/you/AppData/Local/Programs/codex/codex.exe`). |
+| `PIXMITH_SANDBOX`          | `workspace-write`                                    | Sandbox policy passed to `codex exec`. Override only if your platform needs a different policy (e.g. `read-only`, `danger-full-access`). |
 | `PIXMITH_OUTPUT_DIR`       | `<project>/images`                                   | Default output directory for generated PNGs.                    |
 | `CODEX_HOME`               | `~/.codex`                                            | Codex home (used to locate the backup `generated_images/` copy). |
 | `PIXMITH_TIMEOUT_MS`       | `300000` (5 min)                                     | Hard timeout per generation.                                    |
@@ -155,19 +172,35 @@ with anything already there):
 - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 
+macOS / Linux:
+
 ```json
 {
   "mcpServers": {
     "pixmith": {
       "command": "node",
-      "args": ["/path/to/Pixmith/src/index.js"],
-      "env": {
-        "CODEX_BIN": "/Applications/Codex.app/Contents/Resources/codex"
-      }
+      "args": ["/path/to/Pixmith/src/index.js"]
     }
   }
 }
 ```
+
+Windows (note forward slashes, or escaped `\\`, in JSON):
+
+```json
+{
+  "mcpServers": {
+    "pixmith": {
+      "command": "node",
+      "args": ["C:/path/to/Pixmith/src/index.js"]
+    }
+  }
+}
+```
+
+`CODEX_BIN` is auto-detected, so it's usually omitted. Add it under `"env"` only
+if you need to override the detected path, e.g.
+`"env": { "CODEX_BIN": "C:/Users/you/AppData/Local/Programs/codex/codex.exe" }`.
 
 Then **quit and reopen** the app. Pixmith appears as a connector exposing the
 `generate_image` tool.
