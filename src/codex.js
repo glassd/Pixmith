@@ -39,27 +39,27 @@ function uniqueStamp() {
 }
 
 function buildPrompt(prompt, sizeValue, targetPath) {
-  // Tightly scripted so Codex reliably uses the built-in image_gen tool and
-  // copies the result to an exact path, then echoes a parseable marker.
+  // The agent's ONLY job is to call image_gen once. Pixmith locates the saved
+  // PNG itself (image_gen writes to $CODEX_HOME/generated_images), so we
+  // explicitly forbid copying / shell / filesystem hunting — that agent work is
+  // slow and non-deterministic (and on Windows the agent ends up scanning logs).
   return [
-    "You are running non-interactively. Do not ask any questions; make reasonable assumptions and proceed.",
+    "You are running non-interactively. Do not ask any questions; proceed.",
     "",
-    "TASK: Use the $imagegen skill's built-in `image_gen` tool to generate exactly one raster image.",
+    "TASK: Use the $imagegen skill's built-in `image_gen` tool to generate exactly ONE raster image.",
     "",
     `IMAGE PROMPT: ${prompt}`,
     "",
     `SIZE: ${sizeValue === "auto" ? "auto (model decides)" : sizeValue}`,
     "",
-    "REQUIREMENTS:",
+    "RULES:",
     "- Use the built-in image_gen tool (gpt-image-2). Do NOT use the CLI fallback, do NOT ask about OPENAI_API_KEY, do NOT use transparency unless the image prompt explicitly asks for it.",
-    "- Generate a single image (no variants).",
-    `- After it is generated, copy the final PNG to EXACTLY this absolute destination path: ${targetPath}`,
-    "- Create parent directories if needed. Overwrite the destination if it already exists.",
-    "- Do not generate any other files or assets.",
+    "- Generate exactly one image (no variants).",
+    "- Do NOT copy, move, rename, or post-process the file. Do NOT run shell commands. Do NOT search the filesystem. Saving and locating the file is handled externally — your only job is to call image_gen once.",
     "",
-    "OUTPUT CONTRACT: Your final message must be exactly one line and nothing else:",
-    `SAVED:${targetPath}`,
-    "If generation fails for any reason, your final message must be exactly one line starting with:",
+    "OUTPUT CONTRACT: When the image has been generated, your final message must be exactly the single word:",
+    "DONE",
+    "If you cannot generate it, your final message must instead start with:",
     "ERROR: <short reason>",
   ].join("\n");
 }
@@ -80,11 +80,17 @@ function parseMarker(text) {
   return null;
 }
 
-/** Newest *.png under CODEX_HOME/generated_images created at/after `sinceMs`. */
-async function newestGeneratedImage(sinceMs) {
+/**
+ * List every *.png under CODEX_HOME/generated_images as a Map of
+ * absolutePath -> mtimeMs. Used to snapshot before/after a run so we can
+ * identify the file THIS run produced by set difference (robust, unlike an
+ * mtime time-window which is flaky across filesystems/clocks and can match a
+ * stale image from a previous run).
+ */
+async function listGeneratedPngs() {
   const root = path.join(config.codexHome, "generated_images");
-  let best = null;
-  let stack = [root];
+  const out = new Map();
+  const stack = [root];
   while (stack.length) {
     const dir = stack.pop();
     let entries;
@@ -98,20 +104,15 @@ async function newestGeneratedImage(sinceMs) {
       if (ent.isDirectory()) {
         stack.push(full);
       } else if (ent.isFile() && ent.name.toLowerCase().endsWith(".png")) {
-        let st;
         try {
-          st = await fs.stat(full);
+          out.set(full, (await fs.stat(full)).mtimeMs);
         } catch {
-          continue;
-        }
-        if (st.mtimeMs + 2000 < sinceMs) continue; // small clock skew tolerance
-        if (!best || st.mtimeMs > best.mtimeMs) {
-          best = { path: full, mtimeMs: st.mtimeMs };
+          /* ignore */
         }
       }
     }
   }
-  return best ? best.path : null;
+  return out;
 }
 
 function detectAuthFailure(stderr, stdout) {
@@ -170,7 +171,10 @@ export async function generateImage({ prompt, size, outputDir, onProgress } = {}
   );
 
   const fullPrompt = buildPrompt(prompt.trim(), sizeValue, targetPath);
-  const startMs = Date.now();
+
+  // Snapshot existing generated images BEFORE the run, so we can identify the
+  // file this run produces by set difference (not by a flaky mtime window).
+  const beforeSnapshot = await listGeneratedPngs();
 
   // Sandbox vs. bypass. Codex's OS sandbox (Seatbelt/Landlock) is macOS/Linux
   // only; on Windows it has no equivalent and blocks the file-save, so we run
@@ -231,32 +235,35 @@ export async function generateImage({ prompt, size, outputDir, onProgress } = {}
     );
   }
 
-  // 5. Locate the produced PNG, most-trusted source first.
-  const codexHomeCopy = await newestGeneratedImage(startMs);
-  let finalPath = null;
-
-  if (fssync.existsSync(targetPath)) {
-    finalPath = targetPath;
-  } else if (marker && marker.ok && fssync.existsSync(marker.path)) {
-    finalPath = marker.path;
-  } else if (codexHomeCopy) {
-    // Codex generated it but the copy step didn't land where we asked; copy it.
-    try {
-      await fs.copyFile(codexHomeCopy, targetPath);
-      finalPath = targetPath;
-    } catch {
-      finalPath = codexHomeCopy;
-    }
+  // 5. Locate the PNG THIS run produced via snapshot diff: the newest *.png in
+  // generated_images that was NOT present before the run. This is what makes
+  // each job return its own image (never a stale one from a previous job).
+  const afterSnapshot = await listGeneratedPngs();
+  const newPngs = [];
+  for (const [p, mtime] of afterSnapshot) {
+    if (!beforeSnapshot.has(p)) newPngs.push({ path: p, mtime });
   }
+  newPngs.sort((a, b) => b.mtime - a.mtime);
+  const sourcePng = newPngs.length ? newPngs[0].path : null;
 
-  if (!finalPath) {
+  if (!sourcePng) {
+    // No new image appeared. Do NOT fall back to any pre-existing file — that
+    // would return a stale/duplicate image. Surface a clear failure instead.
     throw new PixmithError(
       "no_output",
-      `Codex exited with code ${code} but no PNG was produced. ${
-        marker ? "" : "No SAVED marker was found in Codex's output. "
-      }See detail for the tail of Codex's stderr.`,
+      `Codex exited with code ${code} but produced no new image in ${path.join(config.codexHome, "generated_images")}. ` +
+        `The generation may have been refused or failed.`,
       tail(stderr) || tail(stdout),
     );
+  }
+
+  // Copy the new image into the requested destination under our unique filename.
+  let finalPath;
+  try {
+    await fs.copyFile(sourcePng, targetPath);
+    finalPath = targetPath;
+  } catch {
+    finalPath = sourcePng; // fall back to returning the source path directly
   }
 
   const st = await fs.stat(finalPath);
@@ -269,7 +276,7 @@ export async function generateImage({ prompt, size, outputDir, onProgress } = {}
     size: sizeValue,
     sizeNote,
     bytes: st.size,
-    codexHomeCopy: codexHomeCopy ? path.resolve(codexHomeCopy) : null,
+    codexHomeCopy: path.resolve(sourcePng),
   };
 }
 
