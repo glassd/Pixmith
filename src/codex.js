@@ -123,7 +123,7 @@ const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
  * guards against a non-image file — e.g. a log or text output accidentally
  * written with a .png name — being copied out and returned as the image.
  */
-async function isPng(filePath) {
+export async function isPng(filePath) {
   let fh;
   try {
     fh = await fs.open(filePath, "r");
@@ -145,7 +145,7 @@ async function isPng(filePath) {
  * real PNG file appears, we decode it from the captured output ourselves.
  * Returns the largest valid decoded PNG Buffer found, or null.
  */
-function extractBase64Png(text) {
+export function extractBase64Png(text) {
   if (!text) return null;
   const marker = "iVBORw0KGgo";
   let best = null;
@@ -169,6 +169,65 @@ function extractBase64Png(text) {
     from = idx + marker.length;
   }
   return best;
+}
+
+/** List Codex session rollout logs (*.jsonl under CODEX_HOME/sessions) as path -> mtimeMs. */
+export async function listRolloutLogs() {
+  const root = path.join(config.codexHome, "sessions");
+  const out = new Map();
+  const stack = [root];
+  while (stack.length) {
+    const dir = stack.pop();
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const ent of entries) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        stack.push(full);
+      } else if (ent.isFile() && ent.name.toLowerCase().endsWith(".jsonl")) {
+        try {
+          out.set(full, (await fs.stat(full)).mtimeMs);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Recover the image from this run's Codex session rollout log. Each `codex exec`
+ * writes the conversation — including the image_gen result's base64 image — to a
+ * new rollout *.jsonl under CODEX_HOME/sessions. On platforms where image_gen
+ * doesn't write a PNG file (e.g. Windows), this log is where the image lives, so
+ * we find the run's new/changed log (by diff against a pre-run snapshot), read
+ * it, and decode the base64. Returns a PNG Buffer or null.
+ */
+export async function recoverFromRolloutLogs(rolloutsBefore) {
+  const after = await listRolloutLogs();
+  const fresh = [];
+  for (const [p, mtime] of after) {
+    if (!rolloutsBefore.has(p) || rolloutsBefore.get(p) !== mtime) {
+      fresh.push({ path: p, mtime });
+    }
+  }
+  fresh.sort((a, b) => b.mtime - a.mtime);
+  for (const r of fresh) {
+    let txt;
+    try {
+      txt = await fs.readFile(r.path, "utf8");
+    } catch {
+      continue;
+    }
+    const buf = extractBase64Png(txt);
+    if (buf) return buf;
+  }
+  return null;
 }
 
 function detectAuthFailure(stderr, stdout) {
@@ -228,9 +287,12 @@ export async function generateImage({ prompt, size, outputDir, onProgress } = {}
 
   const fullPrompt = buildPrompt(prompt.trim(), sizeValue, targetPath);
 
-  // Snapshot existing generated images BEFORE the run, so we can identify the
-  // file this run produces by set difference (not by a flaky mtime window).
+  // Snapshot existing generated images AND session rollout logs BEFORE the run,
+  // so we can identify what this run produced by set difference (not by a flaky
+  // mtime window). The rollout log is our image source when no PNG file is
+  // written (e.g. on Windows, image_gen returns base64 only).
   const beforeSnapshot = await listGeneratedPngs();
+  const rolloutsBefore = await listRolloutLogs();
 
   // Sandbox vs. bypass. Codex's OS sandbox (Seatbelt/Landlock) is macOS/Linux
   // only; on Windows it has no equivalent and blocks the file-save, so we run
@@ -323,12 +385,14 @@ export async function generateImage({ prompt, size, outputDir, onProgress } = {}
     }
   } else {
     // No real PNG file was written (seen on platforms where image_gen returns
-    // the image as base64 in its output rather than a file). Recover it by
-    // decoding the base64 from Codex's captured output and writing real bytes.
+    // the image as base64 rather than a file, e.g. Windows). Recover it by
+    // decoding the base64 — first from Codex's captured output, then from this
+    // run's session rollout log, which is where the image_gen result lives.
     const recovered =
       extractBase64Png(lastMessage) ||
       extractBase64Png(stdout) ||
-      extractBase64Png(stderr);
+      extractBase64Png(stderr) ||
+      (await recoverFromRolloutLogs(rolloutsBefore));
     if (recovered) {
       await fs.writeFile(targetPath, recovered);
       finalPath = targetPath;
@@ -339,8 +403,8 @@ export async function generateImage({ prompt, size, outputDir, onProgress } = {}
     throw new PixmithError(
       "no_output",
       `Codex exited with code ${code} but produced no valid PNG — none was written to ` +
-        `${path.join(config.codexHome, "generated_images")} and no base64 image was found in its output. ` +
-        "The generation may have been refused or failed.",
+        `${path.join(config.codexHome, "generated_images")}, and no base64 image was found in its output or ` +
+        `session logs (${path.join(config.codexHome, "sessions")}). The generation may have been refused or failed.`,
       tail(stderr) || tail(stdout),
     );
   }
