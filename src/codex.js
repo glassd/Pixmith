@@ -115,6 +115,28 @@ async function listGeneratedPngs() {
   return out;
 }
 
+// PNG files always start with this 8-byte signature.
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/**
+ * True only if `filePath` is a real PNG (starts with the PNG magic bytes). This
+ * guards against a non-image file — e.g. a log or text output accidentally
+ * written with a .png name — being copied out and returned as the image.
+ */
+async function isPng(filePath) {
+  let fh;
+  try {
+    fh = await fs.open(filePath, "r");
+    const buf = Buffer.alloc(8);
+    const { bytesRead } = await fh.read(buf, 0, 8, 0);
+    return bytesRead === 8 && buf.equals(PNG_MAGIC);
+  } catch {
+    return false;
+  } finally {
+    if (fh) await fh.close();
+  }
+}
+
 function detectAuthFailure(stderr, stdout) {
   const hay = `${stderr}\n${stdout}`.toLowerCase();
   return (
@@ -244,15 +266,28 @@ export async function generateImage({ prompt, size, outputDir, onProgress } = {}
     if (!beforeSnapshot.has(p)) newPngs.push({ path: p, mtime });
   }
   newPngs.sort((a, b) => b.mtime - a.mtime);
-  const sourcePng = newPngs.length ? newPngs[0].path : null;
+
+  // Newest NEW file that is actually a PNG (skip anything that isn't a real
+  // image, e.g. a log/text file that happens to carry a .png name).
+  let sourcePng = null;
+  for (const candidate of newPngs) {
+    if (await isPng(candidate.path)) {
+      sourcePng = candidate.path;
+      break;
+    }
+  }
 
   if (!sourcePng) {
-    // No new image appeared. Do NOT fall back to any pre-existing file — that
-    // would return a stale/duplicate image. Surface a clear failure instead.
+    // No new valid image appeared. Do NOT fall back to any pre-existing file —
+    // that would return a stale/duplicate image. Surface a clear failure.
+    const sawNonPng = newPngs.length > 0;
     throw new PixmithError(
       "no_output",
-      `Codex exited with code ${code} but produced no new image in ${path.join(config.codexHome, "generated_images")}. ` +
-        `The generation may have been refused or failed.`,
+      `Codex exited with code ${code} but produced no new valid PNG in ${path.join(config.codexHome, "generated_images")}. ` +
+        (sawNonPng
+          ? "A new file appeared but it was not a valid image (its bytes are not a PNG). "
+          : "") +
+        "The generation may have been refused or failed.",
       tail(stderr) || tail(stdout),
     );
   }
@@ -266,9 +301,14 @@ export async function generateImage({ prompt, size, outputDir, onProgress } = {}
     finalPath = sourcePng; // fall back to returning the source path directly
   }
 
+  // Final guard: the file we return must be a non-empty, valid PNG.
   const st = await fs.stat(finalPath);
-  if (!st.size) {
-    throw new PixmithError("no_output", `Produced file "${finalPath}" is empty.`);
+  if (!st.size || !(await isPng(finalPath))) {
+    throw new PixmithError(
+      "no_output",
+      `The produced file "${finalPath}" is not a valid PNG image.`,
+      tail(stderr),
+    );
   }
 
   return {
