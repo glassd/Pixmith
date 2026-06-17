@@ -82,9 +82,18 @@ export const config = {
   // Every candidate we considered — used to build a helpful "not found" error.
   codexCandidates: codexCandidates(),
 
-  // Sandbox policy passed to `codex exec`. Configurable in case a platform/setup
-  // needs a different policy. Default matches what Codex supports everywhere.
+  // Sandbox policy passed to `codex exec` (when the OS sandbox is in use).
   sandbox: envStr("PIXMITH_SANDBOX", "workspace-write"),
+
+  // Bypass Codex's OS sandbox entirely. Codex sandboxing is implemented with
+  // macOS Seatbelt / Linux Landlock and has no Windows equivalent, so on Windows
+  // the sandboxed file-save is blocked. Default: bypass on Windows, sandbox
+  // elsewhere. Override with PIXMITH_BYPASS_SANDBOX=true|false.
+  bypassSandbox: (() => {
+    const raw = process.env.PIXMITH_BYPASS_SANDBOX;
+    if (raw != null && raw.trim() !== "") return raw.trim().toLowerCase() === "true";
+    return process.platform === "win32";
+  })(),
 
   // Where images land by default when the caller does not pass output_dir.
   // fileURLToPath keeps this correct on Windows (no leading-slash drive bug).

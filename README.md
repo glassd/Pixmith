@@ -167,7 +167,8 @@ just ask for an image and the assistant drives both tools.
 | Variable                   | Default                                              | Purpose                                                          |
 |----------------------------|------------------------------------------------------|------------------------------------------------------------------|
 | `CODEX_BIN`                | auto-detected, else `codex` on `PATH`                | Path to the Codex binary. Set this if auto-detection misses (e.g. `CODEX_BIN=C:/Users/you/AppData/Local/Programs/codex/codex.exe`). |
-| `PIXMITH_SANDBOX`          | `workspace-write`                                    | Sandbox policy passed to `codex exec`. Override only if your platform needs a different policy (e.g. `read-only`, `danger-full-access`). |
+| `PIXMITH_SANDBOX`          | `workspace-write`                                    | Sandbox policy passed to `codex exec` when the OS sandbox is used. |
+| `PIXMITH_BYPASS_SANDBOX`   | `true` on Windows, else `false`                      | Run Codex without its OS sandbox. Codex sandboxing is macOS/Linux only (Seatbelt/Landlock); on Windows it blocks the file-save, so Pixmith bypasses it there. Set `true`/`false` to override. |
 | `PIXMITH_POLL_WAIT_MS`     | `25000` (25s)                                        | Max wait per `get_image_result` call. Lower it if your MCP client's request timeout is under ~30s. |
 | `PIXMITH_OUTPUT_DIR`       | `<project>/images`                                   | Default output directory for generated PNGs.                    |
 | `CODEX_HOME`               | `~/.codex`                                            | Codex home (used to locate the backup `generated_images/` copy). |
@@ -247,6 +248,7 @@ Or add the same `mcpServers` block above to a project-level `.mcp.json`.
 | `[not_signed_in]`                    | Sign in to Codex (ChatGPT account) or configure an API key, then retry.     |
 | `[timeout]`                          | Large image or slow service — raise `PIXMITH_TIMEOUT_MS`.                    |
 | `[generation_failed]` / `[no_output]`| Codex ran but produced nothing; see the `Detail:` stderr tail in the error. |
+| Windows: image isn't saved / sandbox error | Codex's OS sandbox is macOS/Linux only and blocks file writes on Windows. Pixmith bypasses it on Windows automatically (`PIXMITH_BYPASS_SANDBOX=true`). If you overrode that, unset it. |
 | Client times out during generation | Shouldn't happen: `generate_image` returns instantly and `get_image_result` waits at most ~25s per call. If your client's request timeout is under ~30s, lower `PIXMITH_POLL_WAIT_MS` to match. The PNG is still saved either way — check `output_dir` (and `$CODEX_HOME/generated_images/`). |
 | `[unknown_job]` from get_image_result | The job_id expired (>15 min) or generation was never started — call `generate_image` first, then poll with the returned job_id. |
 

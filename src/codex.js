@@ -172,17 +172,22 @@ export async function generateImage({ prompt, size, outputDir, onProgress } = {}
   const fullPrompt = buildPrompt(prompt.trim(), sizeValue, targetPath);
   const startMs = Date.now();
 
+  // Sandbox vs. bypass. Codex's OS sandbox (Seatbelt/Landlock) is macOS/Linux
+  // only; on Windows it has no equivalent and blocks the file-save, so we run
+  // unsandboxed there (see config.bypassSandbox). When sandboxed, we grant write
+  // access to the destination via --add-dir.
+  const sandboxArgs = config.bypassSandbox
+    ? ["--dangerously-bypass-approvals-and-sandbox"]
+    : ["-s", config.sandbox, "--add-dir", destDir];
+
   // Note: the prompt is passed via stdin (the "-" sentinel), NOT as a CLI arg.
   // It's a large multi-line string and embedding it in an argv that may pass
   // through a Windows shell (.cmd shims) is fragile; stdin avoids all quoting.
   const codexArgs = [
     "exec",
     "--skip-git-repo-check",
-    "-s",
-    config.sandbox,
+    ...sandboxArgs,
     "-C",
-    destDir,
-    "--add-dir",
     destDir,
     "--output-last-message",
     lastMsgPath,
