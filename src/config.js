@@ -24,7 +24,24 @@ function envStr(name, fallback) {
   return raw == null || raw.trim() === "" ? fallback : raw.trim();
 }
 
+function envBool(name, fallback) {
+  const raw = process.env[name];
+  if (raw == null || raw.trim() === "") return fallback;
+  return raw.trim().toLowerCase() === "true";
+}
+
 const HOME = os.homedir();
+const PROJECT_ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+
+/** Read the version from package.json so the server never drifts from it. */
+function readPackageVersion() {
+  try {
+    const pkg = JSON.parse(fssync.readFileSync(path.join(PROJECT_ROOT, "package.json"), "utf8"));
+    return typeof pkg.version === "string" ? pkg.version : "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
 
 /**
  * Candidate Codex binary locations per platform, tried in order. The first that
@@ -77,6 +94,8 @@ function resolveCodexBin() {
 }
 
 export const config = {
+  version: readPackageVersion(),
+
   // Path to the Codex binary, or a bare command resolved on PATH.
   codexBin: resolveCodexBin(),
   // Every candidate we considered — used to build a helpful "not found" error.
@@ -89,66 +108,112 @@ export const config = {
   // macOS Seatbelt / Linux Landlock and has no Windows equivalent, so on Windows
   // the sandboxed file-save is blocked. Default: bypass on Windows, sandbox
   // elsewhere. Override with PIXMITH_BYPASS_SANDBOX=true|false.
-  bypassSandbox: (() => {
-    const raw = process.env.PIXMITH_BYPASS_SANDBOX;
-    if (raw != null && raw.trim() !== "") return raw.trim().toLowerCase() === "true";
-    return process.platform === "win32";
-  })(),
+  bypassSandbox: envBool("PIXMITH_BYPASS_SANDBOX", process.platform === "win32"),
 
   // Where images land by default when the caller does not pass output_dir.
-  // fileURLToPath keeps this correct on Windows (no leading-slash drive bug).
-  defaultOutputDir:
-    process.env.PIXMITH_OUTPUT_DIR ||
-    path.resolve(fileURLToPath(new URL("../images", import.meta.url))),
+  // Resolved against the project root so a relative override still works.
+  defaultOutputDir: path.resolve(
+    PROJECT_ROOT,
+    envStr("PIXMITH_OUTPUT_DIR", path.join(PROJECT_ROOT, "images")),
+  ),
 
-  // CODEX_HOME holds generated_images/<session>/ig_*.png as a backup location.
-  codexHome: process.env.CODEX_HOME || path.join(HOME, ".codex"),
+  // CODEX_HOME holds generated_images/<session>/ig_*.png and sessions/**.jsonl.
+  codexHome: envStr("CODEX_HOME", path.join(HOME, ".codex")),
 
   // Hard timeout for a single generation, in milliseconds.
   timeoutMs: envInt("PIXMITH_TIMEOUT_MS", 5 * 60 * 1000),
 
+  // How many Codex generations may run at once. Each one is a full agent
+  // session against the user's ChatGPT quota, so keep this small. Extra
+  // requests queue and are reported as status "queued".
+  maxConcurrent: envInt("PIXMITH_MAX_CONCURRENT", 1),
+
+  // Long-poll window per get_image_result call. Must stay under the client's
+  // per-request timeout (Claude Desktop ~60s); 25s leaves comfortable margin.
+  pollWaitMs: Math.min(55_000, Math.max(2_000, envInt("PIXMITH_POLL_WAIT_MS", 25_000))),
+
   // Whether to inline the PNG as MCP image content (base64), and the size cap.
-  returnImage: (process.env.PIXMITH_RETURN_IMAGE || "true").toLowerCase() !== "false",
+  returnImage: envBool("PIXMITH_RETURN_IMAGE", true),
   maxInlineBytes: envInt("PIXMITH_MAX_INLINE_BYTES", 6 * 1024 * 1024),
 };
 
 /**
- * Normalize a requested size into something the imagegen skill understands.
+ * gpt-image-2 size constraints (from the imagegen skill): `auto`, or
+ * WIDTHxHEIGHT where each edge is a multiple of 16, the longest edge is at most
+ * 3840px, the long:short ratio is at most 3:1, and the pixel count lies between
+ * 655,360 and 8,294,400.
+ */
+export const SIZE_LIMITS = Object.freeze({
+  step: 16,
+  maxEdge: 3840,
+  maxRatio: 3,
+  minPixels: 655_360,
+  maxPixels: 8_294_400,
+});
+
+const SIZE_SHORTCUTS = Object.freeze({
+  "1k": "1024x1024",
+  "2k": "2048x2048",
+  "4k": "3840x2160",
+});
+
+/**
+ * Normalize a requested size into something the imagegen skill accepts.
  * Accepts: "auto", "1K"/"2K"/"4K" shortcuts, or explicit "WIDTHxHEIGHT".
- * Returns { value, note } where value is what we feed Codex and note explains
- * any coercion (empty when the input was used verbatim).
+ *
+ * Returns { value, note, error }:
+ *  - value: the string to feed Codex, or null when the request is invalid.
+ *  - note:  explains any coercion (edges are rounded to a multiple of 16).
+ *  - error: a human-readable reason when the size cannot be honoured. Callers
+ *           should reject the request up front rather than run a generation
+ *           that gpt-image-2 will refuse after a full agent session.
  */
 export function normalizeSize(size) {
   if (size == null || String(size).trim() === "") {
-    return { value: "1024x1024", note: "" };
+    return { value: "1024x1024", note: "", error: null };
   }
   const s = String(size).trim().toLowerCase();
 
-  if (s === "auto") return { value: "auto", note: "" };
+  if (s === "auto") return { value: "auto", note: "", error: null };
+  if (SIZE_SHORTCUTS[s]) return { value: SIZE_SHORTCUTS[s], note: "", error: null };
 
-  const shortcuts = {
-    "1k": "1024x1024",
-    "2k": "2048x2048",
-    "4k": "3840x2160",
-  };
-  if (shortcuts[s]) return { value: shortcuts[s], note: "" };
-
-  const m = s.match(/^(\d{2,4})\s*[x×]\s*(\d{2,4})$/);
-  if (m) {
-    const w = Number(m[1]);
-    const h = Number(m[2]);
-    // gpt-image-2 constraints: each edge multiple of 16, max edge 3840.
-    if (w >= 256 && h >= 256 && w <= 3840 && h <= 3840) {
-      return { value: `${w}x${h}`, note: "" };
-    }
+  const m = s.match(/^(\d{2,4})\s*[x×*]\s*(\d{2,4})$/);
+  if (!m) {
     return {
-      value: "1024x1024",
-      note: `requested size ${w}x${h} is out of range; used 1024x1024`,
+      value: null,
+      note: "",
+      error: `could not parse size "${size}". Use "auto", "1K"/"2K"/"4K", or "WIDTHxHEIGHT" (e.g. "1536x1024").`,
     };
   }
 
-  return {
-    value: "1024x1024",
-    note: `could not parse size "${size}"; used 1024x1024`,
-  };
+  const { step, maxEdge, maxRatio, minPixels, maxPixels } = SIZE_LIMITS;
+  const reqW = Number(m[1]);
+  const reqH = Number(m[2]);
+  const w = Math.max(step, Math.round(reqW / step) * step);
+  const h = Math.max(step, Math.round(reqH / step) * step);
+  const note =
+    w !== reqW || h !== reqH
+      ? `rounded ${reqW}x${reqH} to ${w}x${h} (each edge must be a multiple of ${step})`
+      : "";
+
+  const problems = [];
+  if (w > maxEdge || h > maxEdge) problems.push(`the longest edge may be at most ${maxEdge}px`);
+  const ratio = Math.max(w, h) / Math.min(w, h);
+  if (ratio > maxRatio) problems.push(`the aspect ratio may be at most ${maxRatio}:1 (got ${ratio.toFixed(2)}:1)`);
+  const pixels = w * h;
+  if (pixels < minPixels) {
+    problems.push(`too few pixels (${pixels.toLocaleString("en-US")} < ${minPixels.toLocaleString("en-US")}; try 1024x1024 or larger)`);
+  }
+  if (pixels > maxPixels) {
+    problems.push(`too many pixels (${pixels.toLocaleString("en-US")} > ${maxPixels.toLocaleString("en-US")}; 3840x2160 is the largest)`);
+  }
+
+  if (problems.length) {
+    return {
+      value: null,
+      note,
+      error: `size ${w}x${h} is not supported by gpt-image-2: ${problems.join("; ")}.`,
+    };
+  }
+  return { value: `${w}x${h}`, note, error: null };
 }
