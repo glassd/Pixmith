@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -9,26 +10,19 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
-import { config } from "./config.js";
+import { config, normalizeSize } from "./config.js";
 import { generateImage, PixmithError } from "./codex.js";
 
 // Image generation takes ~50–90s — longer than the per-request timeout many MCP
 // clients (e.g. Claude Desktop) enforce, and some clients do NOT extend that
 // timeout on progress notifications. So Pixmith never blocks on the long call:
-// `generate_image` starts a background job and returns instantly with a job_id,
-// and `get_image_result` retrieves it, waiting at most POLL_WAIT_MS per call.
-// No single tool call runs long enough to trip a client-side timeout.
+// `generate_image` queues a background job and returns instantly with a job_id,
+// and `get_image_result` retrieves it, waiting at most config.pollWaitMs per
+// call. No single tool call runs long enough to trip a client-side timeout.
 
-// Long-poll window per get_image_result call. Must stay under the client's
-// per-request timeout (Claude Desktop ~60s); 25s leaves comfortable margin.
-// Lower it via PIXMITH_POLL_WAIT_MS if your client times out faster.
-const POLL_WAIT_MS = Math.min(
-  55_000,
-  Math.max(2_000, Number.parseInt(process.env.PIXMITH_POLL_WAIT_MS || "", 10) || 25_000),
-);
+const POLL_WAIT_MS = config.pollWaitMs;
+const POLL_WAIT_SECS = Math.round(POLL_WAIT_MS / 1000);
 const JOB_TTL_MS = 15 * 60 * 1000; // forget finished jobs after this long
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const GENERATE_TOOL = {
   name: "generate_image",
@@ -47,8 +41,9 @@ const GENERATE_TOOL = {
       size: {
         type: "string",
         description:
-          'Optional. "auto", a shortcut "1K"/"2K"/"4K", or explicit "WIDTHxHEIGHT" (e.g. "1024x1024", "1536x1024"). ' +
-          "Each edge 256–3840. Defaults to 1024x1024.",
+          'Optional. "auto", a shortcut "1K"/"2K"/"4K", or explicit "WIDTHxHEIGHT" (e.g. "1024x1024", "1536x1024", "1024x1536", "3840x2160"). ' +
+          "Each edge must be a multiple of 16 (rounded for you), the longest edge at most 3840, the aspect ratio at most 3:1, " +
+          "and the total pixel count between 655,360 and 8,294,400. Defaults to 1024x1024.",
       },
       output_dir: {
         type: "string",
@@ -65,9 +60,9 @@ const GENERATE_TOOL = {
 const RESULT_TOOL = {
   name: "get_image_result",
   description:
-    "Retrieve the result of a `generate_image` job by its job_id. Waits up to ~25 seconds for the image to finish, " +
-    "then returns. If the returned status is \"running\", call this again with the SAME job_id — repeat until status is " +
-    "\"done\" (typically 2–4 calls for one image). On success it returns the saved absolute PNG path and, when small enough, " +
+    `Retrieve the result of a \`generate_image\` job by its job_id. Waits up to ~${POLL_WAIT_SECS} seconds for the image to finish, ` +
+    'then returns. If the returned status is "queued" or "running", call this again with the SAME job_id — repeat until status is ' +
+    '"done" (typically 2–4 calls for one image). On success it returns the saved absolute PNG path and, when small enough, ' +
     "the image inline. Each call is short and will not trip a client timeout.",
   inputSchema: {
     type: "object",
@@ -83,7 +78,7 @@ const RESULT_TOOL = {
 };
 
 const server = new Server(
-  { name: "pixmith", version: "0.2.0" },
+  { name: "pixmith", version: config.version },
   { capabilities: { tools: {} } },
 );
 
@@ -91,13 +86,61 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [GENERATE_TOOL, RESULT_TOOL],
 }));
 
-/** jobId -> { status, startedAt, finishedAt, result, error, settled, prompt } */
+// ---------------------------------------------------------------------------
+// Job queue. At most config.maxConcurrent generations run at once; the rest
+// wait in FIFO order with status "queued". Each generation is a full Codex
+// agent session against the user's ChatGPT quota, so the default is 1.
+// ---------------------------------------------------------------------------
+
+/** jobId -> { status, queuedAt, startedAt, finishedAt, result, error, settled, resolveSettled, prompt, size, outputDir } */
 const jobs = new Map();
+/** jobIds waiting for a slot, in arrival order. */
+const queue = [];
+let running = 0;
 
 function pruneJobs() {
   const now = Date.now();
   for (const [id, job] of jobs) {
     if (job.finishedAt && now - job.finishedAt > JOB_TTL_MS) jobs.delete(id);
+  }
+}
+
+function queuePosition(jobId) {
+  const i = queue.indexOf(jobId);
+  return i === -1 ? 0 : i + 1;
+}
+
+/** Start queued jobs while there is capacity. */
+function pump() {
+  while (running < config.maxConcurrent && queue.length) {
+    const jobId = queue.shift();
+    const job = jobs.get(jobId);
+    if (!job) continue;
+
+    running += 1;
+    job.status = "running";
+    job.startedAt = Date.now();
+
+    generateImage({
+      prompt: job.prompt,
+      size: job.size,
+      outputDir: job.outputDir,
+      onProgress: (line) => process.stderr.write(`[codex ${jobId.slice(0, 8)}] ${line}\n`),
+    })
+      .then((result) => {
+        job.status = "done";
+        job.result = result;
+      })
+      .catch((err) => {
+        job.status = "error";
+        job.error = err;
+      })
+      .finally(() => {
+        job.finishedAt = Date.now();
+        running -= 1;
+        job.resolveSettled();
+        pump();
+      });
   }
 }
 
@@ -113,57 +156,74 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   }
 });
 
-/** Start a background generation job and return immediately. */
+/** Validate, enqueue a generation job, and return immediately. */
 function startGenerate(args) {
   const prompt = args.prompt;
   if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
     return errorResult("[bad_request] `prompt` is required and must be a non-empty string.");
   }
 
+  // Validate size and output_dir now so a bad request fails instantly instead
+  // of after a 60-second agent session.
+  const sizeCheck = normalizeSize(args.size);
+  if (sizeCheck.error) {
+    return errorResult(`[bad_request] Invalid \`size\`: ${sizeCheck.error}`);
+  }
+
+  let outputDir;
+  if (args.output_dir != null) {
+    if (typeof args.output_dir !== "string" || !args.output_dir.trim()) {
+      return errorResult("[bad_request] `output_dir` must be a non-empty string when provided.");
+    }
+    outputDir = args.output_dir.trim();
+    if (!path.isAbsolute(outputDir)) {
+      return errorResult(
+        `[bad_request] \`output_dir\` must be an absolute path (got "${args.output_dir}").`,
+      );
+    }
+  }
+
   pruneJobs();
   const jobId = randomUUID();
+  let resolveSettled;
+  const settled = new Promise((r) => {
+    resolveSettled = r;
+  });
   const job = {
-    status: "running",
-    startedAt: Date.now(),
+    status: "queued",
+    queuedAt: Date.now(),
+    startedAt: null,
     finishedAt: null,
     result: null,
     error: null,
+    settled,
+    resolveSettled,
     prompt: prompt.trim(),
-  };
-
-  job.settled = generateImage({
-    prompt,
     size: args.size,
-    outputDir: args.output_dir,
-    onProgress: (line) => process.stderr.write(`[codex ${jobId.slice(0, 8)}] ${line}\n`),
-  })
-    .then((result) => {
-      job.status = "done";
-      job.result = result;
-    })
-    .catch((err) => {
-      job.status = "error";
-      job.error = err;
-    })
-    .finally(() => {
-      job.finishedAt = Date.now();
-    });
-
-  jobs.set(jobId, job);
-
-  return {
-    content: [
-      {
-        type: "text",
-        text:
-          `Image generation started.\n` +
-          `job_id: ${jobId}\n` +
-          `status: running\n\n` +
-          `This takes ~50–90s. Call get_image_result with this job_id to fetch the PNG; ` +
-          `if it returns status "running", call it again until status is "done".`,
-      },
-    ],
+    outputDir,
   };
+  jobs.set(jobId, job);
+  queue.push(jobId);
+  pump();
+
+  const position = queuePosition(jobId);
+  const lines = [
+    "Image generation started.",
+    `job_id: ${jobId}`,
+    `status: ${job.status}`,
+  ];
+  if (position) lines.push(`queue_position: ${position} (max ${config.maxConcurrent} concurrent)`);
+  if (sizeCheck.note) lines.push(`size_note: ${sizeCheck.note}`);
+  lines.push(
+    "",
+    "This takes ~50–90s once running. Call get_image_result with this job_id to fetch the PNG; " +
+      'if it returns status "queued" or "running", call it again until status is "done".',
+  );
+  return { content: [{ type: "text", text: lines.join("\n") }] };
+}
+
+function elapsedSecs(job) {
+  return Math.round((Date.now() - (job.startedAt ?? job.queuedAt)) / 1000);
 }
 
 /** Retrieve (or wait briefly for) a job's result. */
@@ -179,9 +239,9 @@ async function getResult(args, request, extra) {
     );
   }
 
-  // If still running, long-poll up to POLL_WAIT_MS, emitting progress so clients
+  // If not finished, long-poll up to POLL_WAIT_MS, emitting progress so clients
   // that DO honor it stay comfortable. Either way the call returns quickly.
-  if (job.status === "running") {
+  if (job.status === "queued" || job.status === "running") {
     const progressToken = request.params?._meta?.progressToken;
     let n = 0;
     const sendProgress = (message) => {
@@ -192,28 +252,27 @@ async function getResult(args, request, extra) {
         .catch(() => {});
     };
     const heartbeat = setInterval(() => {
-      const secs = Math.round((Date.now() - job.startedAt) / 1000);
-      sendProgress(`Generating image… ${secs}s elapsed (typically 50–90s).`);
+      const state = job.status === "queued" ? `Queued (position ${queuePosition(jobId)})` : "Generating image";
+      sendProgress(`${state}… ${elapsedSecs(job)}s elapsed (typically 50–90s once running).`);
     }, 4000);
+
+    let pollTimer;
+    const pollWindow = new Promise((r) => {
+      pollTimer = setTimeout(r, POLL_WAIT_MS);
+    });
     try {
-      await Promise.race([job.settled, sleep(POLL_WAIT_MS)]);
+      await Promise.race([job.settled, pollWindow]);
     } finally {
       clearInterval(heartbeat);
+      clearTimeout(pollTimer);
     }
   }
 
-  if (job.status === "running") {
-    const secs = Math.round((Date.now() - job.startedAt) / 1000);
-    return {
-      content: [
-        {
-          type: "text",
-          text:
-            `status: running\njob_id: ${jobId}\nelapsed: ${secs}s\n\n` +
-            `Still generating. Call get_image_result again with the same job_id.`,
-        },
-      ],
-    };
+  if (job.status === "queued" || job.status === "running") {
+    const lines = [`status: ${job.status}`, `job_id: ${jobId}`, `elapsed: ${elapsedSecs(job)}s`];
+    if (job.status === "queued") lines.push(`queue_position: ${queuePosition(jobId)}`);
+    lines.push("", `Still ${job.status === "queued" ? "waiting for a slot" : "generating"}. Call get_image_result again with the same job_id.`);
+    return { content: [{ type: "text", text: lines.join("\n") }] };
   }
 
   if (job.status === "error") {
@@ -229,11 +288,16 @@ async function getResult(args, request, extra) {
 }
 
 async function successResult(result) {
+  // Report the PNG's real dimensions; gpt-image-2 does not always return
+  // exactly the requested size, and "auto" has no fixed size at all.
+  const sizeParts = [];
+  if (result.requestedSize !== result.size) sizeParts.push(`requested ${result.requestedSize}`);
+  if (result.sizeNote) sizeParts.push(result.sizeNote);
   const lines = [
     `status: done`,
     `Image generated and saved.`,
     `Path: ${result.path}`,
-    `Size: ${result.size}${result.sizeNote ? ` (${result.sizeNote})` : ""}`,
+    `Size: ${result.size}${sizeParts.length ? ` (${sizeParts.join("; ")})` : ""}`,
     `Bytes: ${result.bytes}`,
   ];
   if (result.codexHomeCopy && result.codexHomeCopy !== result.path) {
@@ -277,7 +341,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   process.stderr.write(
-    `Pixmith MCP server running (codex: ${config.codexBin}, output: ${config.defaultOutputDir})\n`,
+    `Pixmith ${config.version} MCP server running (codex: ${config.codexBin}, output: ${config.defaultOutputDir}, max concurrent: ${config.maxConcurrent}, poll wait: ${POLL_WAIT_SECS}s)\n`,
   );
 }
 

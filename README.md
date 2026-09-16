@@ -43,12 +43,20 @@ MCP client ──MCP(stdio)──▶ Pixmith ──spawn──▶ codex exec "$i
 ```
 
 1. The client calls `generate_image` with a prompt (and optional size / output dir).
-2. Pixmith runs `codex exec` with a tightly-scripted prompt that tells Codex to use
-   the built-in `image_gen` tool, copy the resulting PNG to an exact path, and print
-   a single `SAVED:<path>` line.
-3. Pixmith locates the PNG (the exact target path → the `SAVED:` marker →, as a
-   fallback, the newest file under `$CODEX_HOME/generated_images/`), and returns its
-   absolute path plus the image inline.
+   Pixmith validates the request, queues a job, and returns a `job_id` at once.
+2. Pixmith runs `codex exec` with a tightly-scripted prompt that tells Codex to call
+   the built-in `image_gen` tool exactly once and reply `DONE` (or `ERROR: <reason>`).
+   The agent is told not to copy files or run shell commands — Pixmith handles that.
+3. Codex writes the PNG to `$CODEX_HOME/generated_images/<session id>/`. Pixmith reads
+   the session id from Codex's own startup banner, copies that session's PNG into the
+   requested output directory, and validates it is a real PNG. If no file was written
+   (seen on Windows), it decodes the image from the base64 in Codex's output or the
+   session's rollout log instead.
+4. The client calls `get_image_result` and receives the absolute path plus the image
+   inline.
+
+Because each job is matched to its own Codex session, concurrent jobs can never pick
+up each other's image.
 
 No tokens or secrets are ever read, printed, or committed by Pixmith.
 
@@ -128,6 +136,12 @@ node scripts/smoke-test.js "a tabby cat astronaut" 1536x1024
 A successful run prints JSON with the saved `path`. Images land in `./images/` by
 default.
 
+Unit tests (no Codex needed):
+
+```bash
+npm test
+```
+
 ---
 
 ## The tools
@@ -142,10 +156,13 @@ uses them together automatically:
 | Param        | Type   | Required | Description                                                                                 |
 |--------------|--------|----------|---------------------------------------------------------------------------------------------|
 | `prompt`     | string | ✅       | Text description of the image.                                                              |
-| `size`       | string | ❌       | `auto`, a shortcut `1K`/`2K`/`4K`, or explicit `WIDTHxHEIGHT` (e.g. `1024x1024`, `1536x1024`). Each edge 256–3840. Default `1024x1024`. |
+| `size`       | string | ❌       | `auto`, a shortcut `1K`/`2K`/`4K`, or explicit `WIDTHxHEIGHT` (e.g. `1024x1024`, `1536x1024`, `3840x2160`). See [size limits](#size-limits). Default `1024x1024`. |
 | `output_dir` | string | ❌       | Absolute directory to save into. Defaults to Pixmith's `images/` folder.                   |
 
-Returns immediately with a `job_id` (it does **not** return the image).
+Returns immediately with a `job_id` (it does **not** return the image). Invalid sizes
+and relative `output_dir` paths are rejected here, before any Codex session starts.
+If more than `PIXMITH_MAX_CONCURRENT` jobs are in flight the new one is reported as
+`status: queued` with its position.
 
 ### `get_image_result` — fetches the finished image
 
@@ -153,12 +170,30 @@ Returns immediately with a `job_id` (it does **not** return the image).
 |----------|--------|----------|--------------------------------------|
 | `job_id` | string | ✅       | The `job_id` from `generate_image`.  |
 
-Waits up to ~25s, then returns. While the image is still rendering it returns
-`status: running` — the assistant simply calls it again with the same `job_id`
-(usually 2–4 times) until `status: done`, at which point it returns the saved
-absolute path and, when small enough, the PNG inline. **Every call is short, so
+Waits up to ~25s, then returns. While the job is waiting for a slot or still
+rendering it returns `status: queued` or `status: running` — the assistant simply
+calls it again with the same `job_id` (usually 2–4 times) until `status: done`, at
+which point it returns the saved absolute path and, when small enough, the PNG inline. **Every call is short, so
 no single request trips a client-side timeout.** You don't manage this yourself —
 just ask for an image and the assistant drives both tools.
+
+### Size limits
+
+`gpt-image-2` accepts `auto` or any `WIDTHxHEIGHT` where:
+
+- each edge is a multiple of 16 (Pixmith rounds for you and notes it in the result),
+- the longest edge is at most 3840 px,
+- the long-to-short aspect ratio is at most 3:1, and
+- the total pixel count is between 655,360 and 8,294,400.
+
+Popular sizes: `1024x1024`, `1536x1024`, `1024x1536`, `2048x2048`, `3840x2160`,
+`2160x3840`. Requests outside these limits fail fast with a `[bad_request]` error
+instead of after a full generation.
+
+The model does not always return exactly the requested size (a `1024x1024` request
+may come back as `1254x1254`, and `auto` has no fixed size). Pixmith reads the real
+width and height from the saved PNG and reports those, noting the requested size
+when it differs.
 
 ---
 
@@ -173,6 +208,7 @@ just ask for an image and the assistant drives both tools.
 | `PIXMITH_OUTPUT_DIR`       | `<project>/images`                                   | Default output directory for generated PNGs.                    |
 | `CODEX_HOME`               | `~/.codex`                                            | Codex home (used to locate the backup `generated_images/` copy). |
 | `PIXMITH_TIMEOUT_MS`       | `300000` (5 min)                                     | Hard timeout per generation.                                    |
+| `PIXMITH_MAX_CONCURRENT`   | `1`                                                  | How many Codex generations may run at once. Extra jobs queue.   |
 | `PIXMITH_RETURN_IMAGE`     | `true`                                               | Set `false` to return only the path, never inline bytes.        |
 | `PIXMITH_MAX_INLINE_BYTES` | `6291456` (6 MB)                                     | Files larger than this return path-only (e.g. 4K images).       |
 
@@ -251,6 +287,8 @@ Or add the same `mcpServers` block above to a project-level `.mcp.json`.
 | Windows: image isn't saved / sandbox error | Codex's OS sandbox is macOS/Linux only and blocks file writes on Windows. Pixmith bypasses it on Windows automatically (`PIXMITH_BYPASS_SANDBOX=true`). If you overrode that, unset it. |
 | Client times out during generation | Shouldn't happen: `generate_image` returns instantly and `get_image_result` waits at most ~25s per call. If your client's request timeout is under ~30s, lower `PIXMITH_POLL_WAIT_MS` to match. The PNG is still saved either way — check `output_dir` (and `$CODEX_HOME/generated_images/`). |
 | `[unknown_job]` from get_image_result | The job_id expired (>15 min) or generation was never started — call `generate_image` first, then poll with the returned job_id. |
+| `[bad_request]` from generate_image  | The `size` breaks a gpt-image-2 limit (see [size limits](#size-limits)) or `output_dir` is not absolute. Fix the argument and retry. |
+| Jobs sit at `status: queued`         | More jobs were started than `PIXMITH_MAX_CONCURRENT` allows. They run in order; raise the limit if your plan can take it. |
 
 > **A note on timing.** A generation is an agent session, not a raw API call, so it
 > takes ~50–90s. To stay under client request timeouts, Pixmith never blocks on the
@@ -266,7 +304,12 @@ Or add the same `mcpServers` block above to a project-level `.mcp.json`.
 - Pixmith never reads, prints, or commits Codex auth tokens (e.g. `~/.codex/auth.json`).
 - `node_modules/`, generated images, and any `.env`/`auth.json`/key files are
   git-ignored.
-- Codex runs with the `workspace-write` sandbox scoped to the output directory.
+- On macOS and Linux, Codex runs with the `workspace-write` sandbox scoped to the
+  output directory. **On Windows there is no OS sandbox** (Codex's Seatbelt/Landlock
+  sandboxing is Unix-only), so Pixmith runs Codex unsandboxed there by default. The
+  agent is instructed not to run shell commands, but that is a prompt, not a policy.
+- `output_dir` must be an absolute path; relative paths are rejected so the MCP
+  client's working directory never decides where files land.
 
 ## License
 
