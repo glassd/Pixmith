@@ -34,30 +34,65 @@ function uniqueStamp() {
   return `${hr}-${process.pid}`;
 }
 
-export function buildPrompt(prompt, sizeValue) {
+/**
+ * Build the scripted prompt for one `codex exec` run.
+ *
+ * @param {string} prompt     The image description, or the edit instruction.
+ * @param {string} sizeValue  A normalized size ("auto" or "WIDTHxHEIGHT").
+ * @param {object} [opts]
+ * @param {"generate"|"edit"} [opts.mode]  "edit" treats attached Image 1 as the edit target.
+ * @param {number} [opts.imageCount]       How many images are attached via `codex exec -i`.
+ */
+export function buildPrompt(prompt, sizeValue, { mode = "generate", imageCount = 0 } = {}) {
   // The agent's ONLY job is to call image_gen once. Pixmith locates the saved
   // PNG itself (image_gen writes to $CODEX_HOME/generated_images/<session>/),
   // so we explicitly forbid copying / shell / filesystem hunting — that agent
   // work is slow and non-deterministic.
-  return [
+  const editing = mode === "edit";
+  const lines = [
     "You are running non-interactively. Do not ask any questions; proceed.",
     "",
-    "TASK: Use the $imagegen skill's built-in `image_gen` tool to generate exactly ONE raster image.",
+    editing
+      ? "TASK: Use the $imagegen skill's built-in `image_gen` tool to EDIT the attached image, producing exactly ONE raster image."
+      : "TASK: Use the $imagegen skill's built-in `image_gen` tool to generate exactly ONE raster image.",
     "",
-    `IMAGE PROMPT: ${prompt}`,
+  ];
+
+  if (imageCount > 0) {
+    lines.push(`INPUT IMAGES: ${imageCount} image${imageCount === 1 ? " is" : "s are"} attached to this message and already visible to you.`);
+    for (let i = 1; i <= imageCount; i += 1) {
+      const role = editing && i === 1 ? "edit target" : "reference (style / composition / subject)";
+      lines.push(`- Image ${i}: ${role}`);
+    }
+    lines.push("");
+  }
+
+  lines.push(
+    `${editing ? "EDIT INSTRUCTION" : "IMAGE PROMPT"}: ${prompt}`,
     "",
-    `SIZE: ${sizeValue === "auto" ? "auto (model decides)" : sizeValue}`,
+    `SIZE: ${sizeValue === "auto" ? (editing ? "auto (keep the edit target's aspect ratio)" : "auto (model decides)") : sizeValue}`,
     "",
     "RULES:",
     "- Use the built-in image_gen tool (gpt-image-2). Do NOT use the CLI fallback, do NOT ask about OPENAI_API_KEY, do NOT use transparency unless the image prompt explicitly asks for it.",
     "- Generate exactly one image (no variants).",
+  );
+  if (editing) {
+    lines.push(
+      "- This is an EDIT of Image 1: change only what the edit instruction asks for and keep everything else (subject identity, composition, colours, text) unchanged.",
+    );
+  }
+  if (imageCount > 0) {
+    lines.push("- The attached images are already in the conversation. Do NOT call view_image or read them from disk.");
+  }
+  lines.push(
     "- Do NOT copy, move, rename, or post-process the file. Do NOT run shell commands. Do NOT search the filesystem. Saving and locating the file is handled externally — your only job is to call image_gen once.",
     "",
     "OUTPUT CONTRACT: When the image has been generated, your final message must be exactly the single word:",
     "DONE",
     "If you cannot generate it, your final message must instead start with:",
     "ERROR: <short reason>",
-  ].join("\n");
+  );
+  return lines.join("\n");
 }
 
 /**
@@ -243,6 +278,139 @@ export async function recoverFromRolloutLogs(rolloutsBefore, sessionId = null) {
   return null;
 }
 
+/** Human-readable labels for the stages a job moves through. */
+export const STAGE_LABELS = Object.freeze({
+  starting: "Starting Codex",
+  session_started: "Codex session started",
+  rendering: "Rendering the image",
+  finishing: "Codex finished, collecting the image",
+  saving: "Saving the image",
+});
+
+/**
+ * Interpret one line of `codex exec --json` output (JSONL events). Returns null
+ * for anything that is not a recognisable event, so a Codex build that prints
+ * plain text instead simply yields no stage updates. Shape:
+ *   { type, sessionId?, stage?, agentText?, error? }
+ * Parsing is deliberately loose — the event schema has changed between Codex
+ * releases, and an unknown event must never fail a generation.
+ */
+export function parseCodexEvent(line) {
+  const t = String(line ?? "").trim();
+  if (!t.startsWith("{")) return null;
+  let ev;
+  try {
+    ev = JSON.parse(t);
+  } catch {
+    return null;
+  }
+  if (!ev || typeof ev.type !== "string") return null;
+  const out = { type: ev.type };
+
+  if (ev.type === "thread.started" || ev.type === "session.created") {
+    const id = ev.thread_id || ev.session_id;
+    if (typeof id === "string" && id) out.sessionId = id.toLowerCase();
+    out.stage = "session_started";
+  } else if (ev.type === "turn.started") {
+    out.stage = "session_started";
+  } else if (ev.type.startsWith("item.")) {
+    const item = ev.item && typeof ev.item === "object" ? ev.item : {};
+    if (item.type === "agent_message" && typeof item.text === "string" && ev.type === "item.completed") {
+      out.agentText = item.text;
+      // The closing DONE / ERROR message means the image_gen call is over.
+      out.stage = parseMarker(item.text) ? "finishing" : "rendering";
+    } else if (item.type === "error" && typeof item.message === "string") {
+      out.error = item.message;
+    } else {
+      out.stage = "rendering";
+    }
+  } else if (ev.type === "turn.completed") {
+    out.stage = "finishing";
+  } else if (ev.type === "turn.failed") {
+    out.error = String(ev.error?.message || ev.message || "the Codex turn failed");
+  } else if (ev.type === "error") {
+    out.error = String(ev.message || ev.error?.message || "unknown Codex error");
+  }
+  return out;
+}
+
+const IMAGE_SIGNATURES = [
+  { type: "png", test: (b) => b.subarray(0, 8).equals(PNG_MAGIC) },
+  { type: "jpeg", test: (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff },
+  { type: "webp", test: (b) => b.toString("ascii", 0, 4) === "RIFF" && b.toString("ascii", 8, 12) === "WEBP" },
+  { type: "gif", test: (b) => b.toString("ascii", 0, 4) === "GIF8" },
+];
+
+/** Sniff an image file's real type from its magic bytes: "png" | "jpeg" | "webp" | "gif" | null. */
+export async function detectImageType(filePath) {
+  let fh;
+  try {
+    fh = await fs.open(filePath, "r");
+    const buf = Buffer.alloc(12);
+    const { bytesRead } = await fh.read(buf, 0, 12, 0);
+    if (bytesRead < 12) return null;
+    return IMAGE_SIGNATURES.find((sig) => sig.test(buf))?.type ?? null;
+  } catch {
+    return null;
+  } finally {
+    if (fh) await fh.close();
+  }
+}
+
+export const MAX_INPUT_IMAGES = 4;
+export const MAX_INPUT_IMAGE_BYTES = 20 * 1024 * 1024;
+
+/**
+ * Validate the input images for an edit / reference request and return their
+ * resolved absolute paths. Everything is checked up front so a bad path fails
+ * in milliseconds instead of after a Codex session.
+ */
+export async function validateInputImages(images) {
+  if (images == null) return [];
+  if (!Array.isArray(images)) {
+    throw new PixmithError("bad_request", "Input images must be given as an array of absolute file paths.");
+  }
+  if (images.length > MAX_INPUT_IMAGES) {
+    throw new PixmithError("bad_request", `At most ${MAX_INPUT_IMAGES} input images are supported (got ${images.length}).`);
+  }
+  const out = [];
+  for (const raw of images) {
+    if (typeof raw !== "string" || !raw.trim()) {
+      throw new PixmithError("bad_request", "Each input image must be a non-empty absolute file path.");
+    }
+    const p = raw.trim();
+    if (!path.isAbsolute(p)) {
+      throw new PixmithError("bad_request", `Input image paths must be absolute (got "${raw}").`);
+    }
+    let st;
+    try {
+      st = await fs.stat(p);
+    } catch {
+      throw new PixmithError("bad_request", `Input image not found: ${p}`);
+    }
+    if (!st.isFile()) throw new PixmithError("bad_request", `Input image is not a file: ${p}`);
+    if (st.size > MAX_INPUT_IMAGE_BYTES) {
+      throw new PixmithError(
+        "bad_request",
+        `Input image is too large (${st.size} bytes; the limit is ${MAX_INPUT_IMAGE_BYTES}): ${p}`,
+      );
+    }
+    if (!(await detectImageType(p))) {
+      throw new PixmithError("bad_request", `Input image is not a PNG, JPEG, WebP or GIF file: ${p}`);
+    }
+    out.push(path.resolve(p));
+  }
+  return out;
+}
+
+const USAGE_LIMIT_PHRASES = ["usage limit", "rate limit", "quota exceeded", "too many requests", "try again in"];
+
+/** Heuristic: did Codex stop because the ChatGPT plan's limit was hit? Only consulted when no image was produced. */
+export function detectUsageLimit(...texts) {
+  const hay = texts.filter(Boolean).join("\n").toLowerCase();
+  return USAGE_LIMIT_PHRASES.some((p) => hay.includes(p));
+}
+
 const AUTH_PHRASES = [
   "not signed in",
   "not logged in",
@@ -272,18 +440,28 @@ export function detectAuthFailure(stderr, stdout) {
  * @param {string} args.prompt   Required image description.
  * @param {string} [args.size]   "auto" | "1K"|"2K"|"4K" | "WIDTHxHEIGHT".
  * @param {string} [args.outputDir] Absolute destination directory (defaults to config).
+ * @param {string[]} [args.images] Absolute paths of input images, attached to the Codex prompt.
+ * @param {"generate"|"edit"} [args.mode] "edit" treats images[0] as the edit target (and defaults size to "auto").
+ * @param {AbortSignal} [args.signal] Abort to cancel: the Codex process tree is killed and a "cancelled" error is thrown.
+ * @param {(stage:string)=>void} [args.onStage] Called as the run moves through STAGE_LABELS keys.
  * @param {(line:string)=>void} [args.onProgress] Optional stderr progress sink.
- * @returns {Promise<{path:string, size:string, requestedSize:string, sizeNote:string, width:number|null, height:number|null, bytes:number, codexHomeCopy:string|null, sessionId:string|null}>}
+ * @returns {Promise<{path:string, size:string, requestedSize:string, sizeNote:string, width:number|null, height:number|null, bytes:number, codexHomeCopy:string|null, sessionId:string|null, mode:string, inputImages:string[], durationMs:number}>}
  *   `size` is the actual "WIDTHxHEIGHT" read from the PNG (falls back to the
  *   requested size if the header can't be read); `requestedSize` is what was
  *   asked of Codex.
  */
-export async function generateImage({ prompt, size, outputDir, onProgress } = {}) {
+export async function generateImage({ prompt, size, outputDir, images, mode = "generate", signal, onStage, onProgress } = {}) {
+  const startedAt = Date.now();
+  if (mode !== "generate" && mode !== "edit") {
+    throw new PixmithError("bad_request", `Unknown mode "${mode}" (expected "generate" or "edit").`);
+  }
   if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
     throw new PixmithError("bad_request", "`prompt` is required and must be a non-empty string.");
   }
 
-  const { value: sizeValue, note: sizeNote, error: sizeError } = normalizeSize(size);
+  // An edit keeps the source's aspect ratio unless the caller asks otherwise.
+  const requested = mode === "edit" && (size == null || String(size).trim() === "") ? "auto" : size;
+  const { value: sizeValue, note: sizeNote, error: sizeError } = normalizeSize(requested);
   if (sizeError) throw new PixmithError("bad_request", `Invalid \`size\`: ${sizeError}`);
 
   if (outputDir != null) {
@@ -297,6 +475,12 @@ export async function generateImage({ prompt, size, outputDir, onProgress } = {}
       );
     }
   }
+
+  const inputImages = await validateInputImages(images);
+  if (mode === "edit" && inputImages.length === 0) {
+    throw new PixmithError("bad_request", "Editing needs the image to edit: pass its absolute path.");
+  }
+  if (signal?.aborted) throw new PixmithError("cancelled", "The job was cancelled before it started.");
 
   // 1. Binary present? Only verify when CODEX_BIN looks like a filesystem path.
   // A bare command name (e.g. "codex") is resolved on PATH by the OS, so we let
@@ -322,7 +506,7 @@ export async function generateImage({ prompt, size, outputDir, onProgress } = {}
   // 3. Temp file for Codex's final message.
   const lastMsgPath = path.join(os.tmpdir(), `pixmith-last-${uniqueStamp()}.txt`);
 
-  const fullPrompt = buildPrompt(prompt.trim(), sizeValue);
+  const fullPrompt = buildPrompt(prompt.trim(), sizeValue, { mode, imageCount: inputImages.length });
 
   // Snapshot generated images and rollout logs BEFORE the run. These are only
   // the fallback when Codex's session id can't be parsed from its output; the
@@ -340,9 +524,17 @@ export async function generateImage({ prompt, size, outputDir, onProgress } = {}
   // Note: the prompt is passed via stdin (the "-" sentinel), NOT as a CLI arg.
   // It's a large multi-line string and embedding it in an argv that may pass
   // through a Windows shell (.cmd shims) is fragile; stdin avoids all quoting.
+  // `-i` is variadic, so each image gets its own flag and the list is always
+  // followed by another option — never by the bare "-" prompt sentinel.
+  const imageArgs = inputImages.flatMap((p) => ["-i", p]);
+
+  // `--json` turns stdout into JSONL events: the session id arrives as a
+  // structured field and each event marks a stage we can report as progress.
   const codexArgs = [
     "exec",
+    "--json",
     "--skip-git-repo-check",
+    ...imageArgs,
     ...sandboxArgs,
     "-C",
     destDir,
@@ -351,7 +543,29 @@ export async function generateImage({ prompt, size, outputDir, onProgress } = {}
     "-", // read the prompt from stdin
   ];
 
-  const { stdout, stderr, code, timedOut } = await runCodex(codexArgs, fullPrompt, onProgress);
+  let stage = null;
+  const setStage = (next) => {
+    if (!next || next === stage) return;
+    stage = next;
+    if (onStage) onStage(next);
+  };
+  setStage("starting");
+
+  const runOpts = { onProgress, signal, onEvent: (ev) => setStage(ev.stage) };
+  let run = await runCodex(codexArgs, fullPrompt, runOpts);
+  // A Codex build without `--json` rejects the flag straight away. Run again
+  // without it: stage updates are lost, but the banner/snapshot lookups below
+  // still find the image.
+  if (rejectedJsonFlag(run)) {
+    run = await runCodex(codexArgs.filter((a) => a !== "--json"), fullPrompt, runOpts);
+  }
+  const { stdout, stderr, code, timedOut, aborted, agentText, eventErrors } = run;
+
+  if (aborted) {
+    fs.unlink(lastMsgPath).catch(() => {});
+    throw new PixmithError("cancelled", "The job was cancelled; the Codex session was stopped.");
+  }
+  setStage("saving");
 
   // 4. Read Codex's final message.
   let lastMessage = "";
@@ -363,7 +577,7 @@ export async function generateImage({ prompt, size, outputDir, onProgress } = {}
     fs.unlink(lastMsgPath).catch(() => {});
   }
 
-  const sessionId = parseSessionId(stderr) || parseSessionId(stdout);
+  const sessionId = run.sessionId || parseSessionId(stderr) || parseSessionId(stdout);
 
   // 5. Locate the PNG THIS run produced. Preferred: the session-scoped
   // directory generated_images/<session id>/, which cannot contain another
@@ -401,6 +615,7 @@ export async function generateImage({ prompt, size, outputDir, onProgress } = {}
     // session rollout log.
     const recovered =
       extractBase64Png(lastMessage) ||
+      extractBase64Png(agentText) ||
       extractBase64Png(stdout) ||
       extractBase64Png(stderr) ||
       (await recoverFromRolloutLogs(rolloutsBefore, sessionId));
@@ -427,6 +642,9 @@ export async function generateImage({ prompt, size, outputDir, onProgress } = {}
         bytes: st.size,
         codexHomeCopy: sourcePng ? path.resolve(sourcePng) : null,
         sessionId,
+        mode,
+        inputImages,
+        durationMs: Date.now() - startedAt,
       };
     }
     throw new PixmithError("no_output", `The produced file "${finalPath}" is not a valid PNG image.`, tail(stderr));
@@ -448,9 +666,21 @@ export async function generateImage({ prompt, size, outputDir, onProgress } = {}
     );
   }
 
-  const marker = parseMarker(lastMessage) || parseMarker(stdout);
+  const reported = eventErrors.join("\n");
+  if (detectUsageLimit(reported, stderr)) {
+    throw new PixmithError(
+      "usage_limit",
+      "Codex reports that your ChatGPT plan's usage limit was reached. Wait for the limit to reset, then retry.",
+      tail(reported || stderr),
+    );
+  }
+
+  const marker = parseMarker(lastMessage) || parseMarker(agentText) || parseMarker(stdout);
   if (marker && marker.ok === false) {
     throw new PixmithError("generation_failed", `Codex reported a generation failure: ${marker.reason}`, tail(stderr));
+  }
+  if (reported) {
+    throw new PixmithError("generation_failed", `Codex reported an error: ${tail(reported, 400)}`, tail(stderr));
   }
 
   throw new PixmithError(
@@ -460,6 +690,12 @@ export async function generateImage({ prompt, size, outputDir, onProgress } = {}
       `session logs (${path.join(config.codexHome, "sessions")}). The generation may have been refused or failed.`,
     tail(stderr) || tail(stdout),
   );
+}
+
+/** Did this Codex build refuse the `--json` flag (an argument-parsing failure, before any session started)? */
+export function rejectedJsonFlag({ code, stderr, sessionId, aborted, timedOut }) {
+  if (!code || sessionId || aborted || timedOut) return false;
+  return /(unexpected|unrecognized|unknown|invalid)[^\n]*--json/i.test(stderr || "");
 }
 
 function tail(s, n = 1200) {
@@ -493,6 +729,15 @@ function killTree(child) {
   }
 }
 
+/** Codex processes currently running, so a server shutdown can stop them all. */
+const activeChildren = new Set();
+
+/** Kill every running Codex session (used when the MCP server is shutting down). */
+export function killAllCodex() {
+  for (const child of activeChildren) killTree(child);
+  activeChildren.clear();
+}
+
 /**
  * Spawn codex, feed the prompt via stdin, stream stderr to onProgress, enforce
  * a timeout. Cross-platform: on Windows, `.cmd`/`.bat` shims (e.g. an npm-global
@@ -500,7 +745,7 @@ function killTree(child) {
  * quote the arguments. A native `codex.exe` (or any non-Windows binary) is
  * spawned directly with no shell.
  */
-function runCodex(args, promptStdin, onProgress) {
+function runCodex(args, promptStdin, { onProgress, onEvent, signal } = {}) {
   return new Promise((resolve, reject) => {
     const isWindows = process.platform === "win32";
     const needsShell = isWindows && !/\.exe$/i.test(config.codexBin);
@@ -522,14 +767,41 @@ function runCodex(args, promptStdin, onProgress) {
       return;
     }
 
+    activeChildren.add(child);
+
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let aborted = false;
+    let sessionId = null;
+    let lineBuf = "";
+    const agentMessages = [];
+    const eventErrors = [];
 
     const timer = setTimeout(() => {
       timedOut = true;
       killTree(child);
     }, config.timeoutMs);
+
+    const onAbort = () => {
+      aborted = true;
+      killTree(child);
+    };
+    if (signal) signal.addEventListener("abort", onAbort, { once: true });
+    const cleanup = () => {
+      clearTimeout(timer);
+      activeChildren.delete(child);
+      if (signal) signal.removeEventListener("abort", onAbort);
+    };
+
+    const handleLine = (line) => {
+      const ev = parseCodexEvent(line);
+      if (!ev) return;
+      if (ev.sessionId && !sessionId) sessionId = ev.sessionId;
+      if (ev.agentText) agentMessages.push(ev.agentText);
+      if (ev.error) eventErrors.push(ev.error);
+      if (onEvent) onEvent(ev);
+    };
 
     // Feed the prompt to Codex via stdin, then close it.
     if (child.stdin) {
@@ -539,7 +811,14 @@ function runCodex(args, promptStdin, onProgress) {
     }
 
     child.stdout.on("data", (d) => {
-      stdout += d.toString();
+      const text = d.toString();
+      stdout += text;
+      lineBuf += text;
+      let nl;
+      while ((nl = lineBuf.indexOf("\n")) !== -1) {
+        handleLine(lineBuf.slice(0, nl));
+        lineBuf = lineBuf.slice(nl + 1);
+      }
     });
     child.stderr.on("data", (d) => {
       const text = d.toString();
@@ -551,7 +830,7 @@ function runCodex(args, promptStdin, onProgress) {
       }
     });
     child.on("error", (err) => {
-      clearTimeout(timer);
+      cleanup();
       // ENOENT means the command (often a bare `codex` on PATH) wasn't found.
       const kind = err.code === "ENOENT" ? "binary_missing" : "spawn_failed";
       const msg =
@@ -561,8 +840,18 @@ function runCodex(args, promptStdin, onProgress) {
       reject(new PixmithError(kind, msg));
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve({ stdout, stderr, code, timedOut });
+      cleanup();
+      if (lineBuf.trim()) handleLine(lineBuf);
+      resolve({
+        stdout,
+        stderr,
+        code,
+        timedOut,
+        aborted,
+        sessionId,
+        agentText: agentMessages.join("\n"),
+        eventErrors,
+      });
     });
   });
 }

@@ -1,8 +1,8 @@
 {
   "name": "pixmith",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "Local MCP server that generates images by driving the OpenAI Codex CLI on your ChatGPT subscription (no API key).",
+  "description": "Local MCP server that generates and edits images by driving the OpenAI Codex CLI on your ChatGPT subscription (no API key).",
   "type": "module",
   "bin": {
     "pixmith": "src/index.js"
