@@ -24,6 +24,12 @@ function envStr(name, fallback) {
   return raw == null || raw.trim() === "" ? fallback : raw.trim();
 }
 
+/** A string setting that is passed to the Codex command line: ignored unless it matches `pattern`. */
+function envPattern(name, pattern) {
+  const v = envStr(name, null);
+  return v && pattern.test(v) ? v : null;
+}
+
 function envBool(name, fallback) {
   const raw = process.env[name];
   if (raw == null || raw.trim() === "") return fallback;
@@ -143,6 +149,21 @@ export const config = {
     PROJECT_ROOT,
     envStr("PIXMITH_OUTPUT_DIR", path.join(PROJECT_ROOT, "images")),
   ),
+
+  // Stop Codex as soon as the finished PNG is on disk instead of waiting for
+  // the agent's closing "DONE" turn (which re-uploads the image to the model).
+  earlyExit: envBool("PIXMITH_EARLY_EXIT", true),
+
+  // Give the agent the image prompt in a file instead of making it retype the
+  // text into its tool call (the slowest part of the agent wrapper for long
+  // prompts). Relies on a POSIX `cat`, so it is off on Windows by default.
+  fastPrompt: envBool("PIXMITH_FAST_PROMPT", process.platform !== "win32"),
+
+  // Optional model / reasoning effort for the agent that wraps the image_gen
+  // call. Unset = whatever ~/.codex/config.toml says. The image model itself
+  // (gpt-image-2) is not affected.
+  codexModel: envPattern("PIXMITH_CODEX_MODEL", /^[\w.:-]+$/),
+  codexEffort: envPattern("PIXMITH_CODEX_EFFORT", /^[a-z]+$/),
 
   // CODEX_HOME holds generated_images/<session>/ig_*.png and sessions/**.jsonl.
   codexHome: envStr("CODEX_HOME", path.join(HOME, ".codex")),

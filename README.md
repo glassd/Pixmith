@@ -60,12 +60,18 @@ MCP client ──MCP(stdio)──▶ Pixmith ──spawn──▶ codex exec "$i
 3. Codex streams JSON events while it works. Pixmith turns them into stages (session
    started, rendering, finishing) and reports them as MCP progress notifications,
    together with the elapsed time and the typical duration of recent jobs.
-4. Codex writes the PNG to `$CODEX_HOME/generated_images/<session id>/`. Pixmith takes
+4. **Pixmith trims the agent's overhead.** For plain generations the image prompt is
+   handed to the agent in a file, so its tool call stays a few lines long instead of
+   retyping the whole prompt token by token. And as soon as the finished PNG is on disk,
+   Pixmith stops Codex rather than waiting for the agent's closing turn. Together these
+   took a long-prompt 1536×1024 generation from ~46s to ~34s; what remains is almost
+   entirely OpenAI's render time.
+5. Codex writes the PNG to `$CODEX_HOME/generated_images/<session id>/`. Pixmith takes
    the session id from Codex's event stream, copies that session's PNG into the
    requested output directory, and validates it is a real PNG. If no file was written
    (seen on Windows), it decodes the image from the base64 in Codex's output or the
    session's rollout log instead.
-5. The same tool call returns the absolute path plus the image inline. If the job
+6. The same tool call returns the absolute path plus the image inline. If the job
    outlasts the wait window (~45s), the call returns a `job_id` instead and the client
    collects the image with `get_image_result`.
 
@@ -269,6 +275,10 @@ when it differs.
 | `PIXMITH_SANDBOX`          | `workspace-write`                                    | Sandbox policy passed to `codex exec` when the OS sandbox is used. |
 | `PIXMITH_BYPASS_SANDBOX`   | `true` on Windows, else `false`                      | Run Codex without its OS sandbox. Codex sandboxing is macOS/Linux only (Seatbelt/Landlock); on Windows it blocks the file-save, so Pixmith bypasses it there. Set `true`/`false` to override. |
 | `PIXMITH_POLL_WAIT_MS`     | `45000` (45s)                                        | The wait window: the longest any single tool call waits for a job (2s–55s). Lower it if your MCP client's request timeout is under ~60s. |
+| `PIXMITH_EARLY_EXIT`       | `true`                                               | Stop Codex as soon as the finished PNG is on disk instead of waiting for the agent's closing turn (saves ~4–7s and the tokens of re-uploading the image). |
+| `PIXMITH_FAST_PROMPT`      | `true` (`false` on Windows)                          | Hand the image prompt to the agent in a temp file so it does not retype it into its tool call (saves ~1s per 150 characters of prompt). Generations only; edits keep the agent's own rewrite. Falls back to the normal path if Codex's script tools are unavailable. |
+| `PIXMITH_CODEX_MODEL`      | *(Codex config)*                                     | Model for the agent that wraps the image call, e.g. a faster one. Does not change the image model. In testing this made little difference — the wrapper's cost is output speed, which the fast path removes. |
+| `PIXMITH_CODEX_EFFORT`     | *(Codex config)*                                     | Reasoning effort for that agent (`low`, `medium`, …).            |
 | `PIXMITH_STATE_DIR`        | `<project>/.pixmith`                                 | Where Pixmith keeps its recent job durations (used for time estimates). |
 | `PIXMITH_OUTPUT_DIR`       | `<project>/images`                                   | Default output directory for generated PNGs.                    |
 | `CODEX_HOME`               | `~/.codex`                                            | Codex home (used to locate the backup `generated_images/` copy). |

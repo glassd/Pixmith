@@ -17,16 +17,22 @@ const args = process.argv.slice(2);
 const mode = process.env.FAKE_MODE || "ok";
 const home = process.env.CODEX_HOME;
 const emit = (o) => process.stdout.write(`${JSON.stringify(o)}\n`);
-const writePng = () => {
+// A real PNG ends with the IEND chunk; "ok" mode leaves it off so Pixmith's
+// early exit stays out of the way and the full event sequence is exercised.
+const IEND = Buffer.from([0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]);
+const writePng = ({ complete = false } = {}) => {
   const dir = path.join(home, "generated_images", SESSION);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "exec-1.png"), PNG);
+  fs.writeFileSync(path.join(dir, "exec-1.png"), complete ? Buffer.concat([PNG, IEND]) : PNG);
 };
 
 let stdin = "";
 process.stdin.on("data", (d) => (stdin += d));
 process.stdin.on("end", () => {
-  fs.writeFileSync(path.join(home, "last-call.json"), JSON.stringify({ args, stdin }));
+  // The fast path hands the image prompt over in a file; capture what it held.
+  const promptFile = stdin.match(/cat '([^']+)'/)?.[1] ?? null;
+  const promptFileText = promptFile && fs.existsSync(promptFile) ? fs.readFileSync(promptFile, "utf8") : null;
+  fs.writeFileSync(path.join(home, "last-call.json"), JSON.stringify({ args, stdin, promptFile, promptFileText }));
   const lastMsg = args[args.indexOf("--output-last-message") + 1];
 
   if (mode === "nojson") {
@@ -43,6 +49,12 @@ process.stdin.on("end", () => {
 
   emit({ type: "thread.started", thread_id: SESSION });
   emit({ type: "turn.started" });
+  if (mode === "early") {
+    // The image lands on disk, then the agent's closing turn never completes.
+    writePng({ complete: true });
+    setInterval(() => {}, 1000);
+    return;
+  }
   if (mode === "hang") {
     setInterval(() => {}, 1000);
     return;

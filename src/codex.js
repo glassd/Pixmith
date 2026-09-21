@@ -42,8 +42,9 @@ function uniqueStamp() {
  * @param {object} [opts]
  * @param {"generate"|"edit"} [opts.mode]  "edit" treats attached Image 1 as the edit target.
  * @param {number} [opts.imageCount]       How many images are attached via `codex exec -i`.
+ * @param {string} [opts.promptFile]       File holding the ready-made image_gen prompt (see fastPathPrompt).
  */
-export function buildPrompt(prompt, sizeValue, { mode = "generate", imageCount = 0 } = {}) {
+export function buildPrompt(prompt, sizeValue, { mode = "generate", imageCount = 0, promptFile = null } = {}) {
   // The agent's ONLY job is to call image_gen once. Pixmith locates the saved
   // PNG itself (image_gen writes to $CODEX_HOME/generated_images/<session>/),
   // so we explicitly forbid copying / shell / filesystem hunting — that agent
@@ -67,6 +68,23 @@ export function buildPrompt(prompt, sizeValue, { mode = "generate", imageCount =
     lines.push("");
   }
 
+  if (promptFile) {
+    // The agent emits its tool call token by token (~35 tokens/s), so retyping
+    // a long image prompt costs 10s or more before rendering even starts.
+    // Loading the prompt from a file keeps the tool call short and constant.
+    lines.push(
+      "FAST PATH — do this first. The complete image_gen prompt (description plus size) is already saved in a file, so you do not need to retype it.",
+      "Make exactly this ONE code-execution tool call, copied character for character, with no message before it:",
+      "",
+      `const r = await tools.exec_command({cmd: "cat '${promptFile}'", max_output_tokens: 8000});`,
+      "const result = await tools.image_gen__imagegen({prompt: r.output.trim()});",
+      "generatedImage(result);",
+      "",
+      "Only if that call cannot run because those tools do not exist, fall back to calling image_gen yourself using the IMAGE PROMPT and SIZE below.",
+      "",
+    );
+  }
+
   lines.push(
     `${editing ? "EDIT INSTRUCTION" : "IMAGE PROMPT"}: ${prompt}`,
     "",
@@ -75,6 +93,8 @@ export function buildPrompt(prompt, sizeValue, { mode = "generate", imageCount =
     "RULES:",
     "- Use the built-in image_gen tool (gpt-image-2). Do NOT use the CLI fallback, do NOT ask about OPENAI_API_KEY, do NOT use transparency unless the image prompt explicitly asks for it.",
     "- Generate exactly one image (no variants).",
+    "- Call image_gen IMMEDIATELY as your first action. Do not write any message before the tool call.",
+    `- Pass the ${editing ? "edit instruction" : "image prompt"} to image_gen exactly as written above. Do not rewrite, expand or embellish it; add only the size.`,
   );
   if (editing) {
     lines.push(
@@ -93,6 +113,12 @@ export function buildPrompt(prompt, sizeValue, { mode = "generate", imageCount =
     "ERROR: <short reason>",
   );
   return lines.join("\n");
+}
+
+/** The text written to the fast-path prompt file: exactly what image_gen should receive. */
+export function fastPathPrompt(prompt, sizeValue) {
+  const size = sizeValue === "auto" ? "" : ` The image must be ${sizeValue} pixels.`;
+  return `Generate exactly ONE raster image.${size} Opaque background unless the description asks for transparency.\n\n${prompt}\n`;
 }
 
 /**
@@ -180,6 +206,32 @@ export async function isPng(filePath) {
     const buf = Buffer.alloc(8);
     const { bytesRead } = await fh.read(buf, 0, 8, 0);
     return bytesRead === 8 && buf.equals(PNG_MAGIC);
+  } catch {
+    return false;
+  } finally {
+    if (fh) await fh.close();
+  }
+}
+
+// Every PNG ends with this 12-byte IEND chunk (zero length, "IEND", its CRC).
+const PNG_TRAILER = Buffer.from([0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]);
+
+/**
+ * True when `filePath` is a PNG that has been written out in full: it starts
+ * with the PNG signature and ends with the IEND chunk. Used to pick up Codex's
+ * image the moment it is on disk without ever grabbing a half-written file.
+ */
+export async function isCompletePng(filePath) {
+  let fh;
+  try {
+    fh = await fs.open(filePath, "r");
+    const { size } = await fh.stat();
+    if (size < PNG_MAGIC.length + PNG_TRAILER.length) return false;
+    const head = Buffer.alloc(PNG_MAGIC.length);
+    const tailBuf = Buffer.alloc(PNG_TRAILER.length);
+    await fh.read(head, 0, head.length, 0);
+    await fh.read(tailBuf, 0, tailBuf.length, size - tailBuf.length);
+    return head.equals(PNG_MAGIC) && tailBuf.equals(PNG_TRAILER);
   } catch {
     return false;
   } finally {
@@ -506,7 +558,20 @@ export async function generateImage({ prompt, size, outputDir, images, mode = "g
   // 3. Temp file for Codex's final message.
   const lastMsgPath = path.join(os.tmpdir(), `pixmith-last-${uniqueStamp()}.txt`);
 
-  const fullPrompt = buildPrompt(prompt.trim(), sizeValue, { mode, imageCount: inputImages.length });
+  // Fast path (plain generations only): hand the agent the prompt in a file.
+  // Edits keep the normal path — there the agent's own rewrite, which spells
+  // out what must stay unchanged, is worth its few seconds.
+  let promptFile = null;
+  if (config.fastPrompt && mode === "generate" && inputImages.length === 0) {
+    promptFile = path.join(os.tmpdir(), `pixmith-prompt-${uniqueStamp()}.txt`);
+    if (promptFile.includes("'")) {
+      promptFile = null; // would break the shell quoting in the scripted call
+    } else {
+      await fs.writeFile(promptFile, fastPathPrompt(prompt.trim(), sizeValue));
+    }
+  }
+
+  const fullPrompt = buildPrompt(prompt.trim(), sizeValue, { mode, imageCount: inputImages.length, promptFile });
 
   // Snapshot generated images and rollout logs BEFORE the run. These are only
   // the fallback when Codex's session id can't be parsed from its output; the
@@ -530,9 +595,16 @@ export async function generateImage({ prompt, size, outputDir, images, mode = "g
 
   // `--json` turns stdout into JSONL events: the session id arrives as a
   // structured field and each event marks a stage we can report as progress.
+  // Optional overrides for the agent that wraps the image_gen call. The wrapper
+  // only copies the prompt into one tool call, so a faster model is enough.
+  const modelArgs = [];
+  if (config.codexModel) modelArgs.push("-m", config.codexModel);
+  if (config.codexEffort) modelArgs.push("-c", `model_reasoning_effort="${config.codexEffort}"`);
+
   const codexArgs = [
     "exec",
     "--json",
+    ...modelArgs,
     "--skip-git-repo-check",
     ...imageArgs,
     ...sandboxArgs,
@@ -551,7 +623,18 @@ export async function generateImage({ prompt, size, outputDir, images, mode = "g
   };
   setStage("starting");
 
-  const runOpts = { onProgress, signal, onEvent: (ev) => setStage(ev.stage) };
+  // Early exit: image_gen writes the PNG into this session's folder as soon as
+  // the render completes. After that Codex would still upload the image back to
+  // the model and wait for it to say DONE — several seconds (and tokens) that
+  // add nothing, so once a complete PNG is on disk we stop Codex and carry on.
+  const imageReady = async (sid) => {
+    if (!config.earlyExit || !sid) return false;
+    for (const p of (await listGeneratedPngs(sid)).keys()) {
+      if (await isCompletePng(p)) return true;
+    }
+    return false;
+  };
+  const runOpts = { onProgress, signal, onEvent: (ev) => setStage(ev.stage), until: imageReady };
   let run = await runCodex(codexArgs, fullPrompt, runOpts);
   // A Codex build without `--json` rejects the flag straight away. Run again
   // without it: stage updates are lost, but the banner/snapshot lookups below
@@ -560,6 +643,8 @@ export async function generateImage({ prompt, size, outputDir, images, mode = "g
     run = await runCodex(codexArgs.filter((a) => a !== "--json"), fullPrompt, runOpts);
   }
   const { stdout, stderr, code, timedOut, aborted, agentText, eventErrors } = run;
+
+  if (promptFile) fs.unlink(promptFile).catch(() => {});
 
   if (aborted) {
     fs.unlink(lastMsgPath).catch(() => {});
@@ -644,6 +729,7 @@ export async function generateImage({ prompt, size, outputDir, images, mode = "g
         sessionId,
         mode,
         inputImages,
+        stoppedEarly: Boolean(run.stoppedEarly),
         durationMs: Date.now() - startedAt,
       };
     }
@@ -729,6 +815,22 @@ function killTree(child) {
   }
 }
 
+/** Ask Codex to exit, escalating to a hard kill if it has not gone within 2s. */
+function stopGently(child) {
+  if (process.platform === "win32") {
+    killTree(child);
+    return;
+  }
+  try {
+    child.kill("SIGTERM");
+  } catch {
+    /* already gone */
+  }
+  setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) killTree(child);
+  }, 2000).unref();
+}
+
 /** Codex processes currently running, so a server shutdown can stop them all. */
 const activeChildren = new Set();
 
@@ -745,7 +847,7 @@ export function killAllCodex() {
  * quote the arguments. A native `codex.exe` (or any non-Windows binary) is
  * spawned directly with no shell.
  */
-function runCodex(args, promptStdin, { onProgress, onEvent, signal } = {}) {
+function runCodex(args, promptStdin, { onProgress, onEvent, signal, until } = {}) {
   return new Promise((resolve, reject) => {
     const isWindows = process.platform === "win32";
     const needsShell = isWindows && !/\.exe$/i.test(config.codexBin);
@@ -788,8 +890,30 @@ function runCodex(args, promptStdin, { onProgress, onEvent, signal } = {}) {
       killTree(child);
     };
     if (signal) signal.addEventListener("abort", onAbort, { once: true });
+    // Poll `until(sessionId)`; once it reports true the work is done and Codex
+    // is asked to stop (SIGTERM first, so it can close its own state cleanly).
+    let stoppedEarly = false;
+    let polling = false;
+    const watcher = until
+      ? setInterval(async () => {
+          if (polling || stoppedEarly || aborted || timedOut) return;
+          polling = true;
+          try {
+            if (await until(sessionId)) {
+              stoppedEarly = true;
+              stopGently(child);
+            }
+          } catch {
+            /* keep waiting for Codex to finish on its own */
+          } finally {
+            polling = false;
+          }
+        }, 250)
+      : null;
+
     const cleanup = () => {
       clearTimeout(timer);
+      if (watcher) clearInterval(watcher);
       activeChildren.delete(child);
       if (signal) signal.removeEventListener("abort", onAbort);
     };
@@ -848,6 +972,7 @@ function runCodex(args, promptStdin, { onProgress, onEvent, signal } = {}) {
         code,
         timedOut,
         aborted,
+        stoppedEarly,
         sessionId,
         agentText: agentMessages.join("\n"),
         eventErrors,

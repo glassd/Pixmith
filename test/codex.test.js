@@ -10,7 +10,9 @@ import {
   detectImageType,
   detectUsageLimit,
   extractBase64Png,
+  fastPathPrompt,
   generateImage,
+  isCompletePng,
   isPng,
   parseCodexEvent,
   parseMarker,
@@ -218,4 +220,41 @@ test("rejectedJsonFlag: only an argument error about --json triggers the plain-t
   assert.equal(rejectedJsonFlag({ code: 2, stderr, aborted: true }), false);
   assert.equal(rejectedJsonFlag({ code: 1, stderr: "stream error while using --json output" }), false);
   assert.equal(rejectedJsonFlag({ code: 1, stderr: "" }), false);
+});
+
+test("fast path: buildPrompt scripts a short tool call that loads the prompt from a file", () => {
+  const p = buildPrompt("a fox", "1536x1024", { promptFile: "/tmp/pixmith-prompt-1.txt" });
+  assert.match(p, /FAST PATH/);
+  assert.match(p, /tools\.exec_command\(\{cmd: "cat '\/tmp\/pixmith-prompt-1\.txt'", max_output_tokens: 8000\}\)/);
+  assert.match(p, /tools\.image_gen__imagegen\(\{prompt: r\.output\.trim\(\)\}\)/);
+  // The prompt stays in the message too: it is the fallback, and the agent still sees what it is sending.
+  assert.match(p, /fall back to calling image_gen yourself/);
+  assert.match(p, /IMAGE PROMPT: a fox/);
+  assert.doesNotMatch(buildPrompt("a fox", "auto"), /FAST PATH/);
+
+  assert.equal(
+    fastPathPrompt("a fox", "1536x1024"),
+    "Generate exactly ONE raster image. The image must be 1536x1024 pixels. Opaque background unless the description asks for transparency.\n\na fox\n",
+  );
+  assert.doesNotMatch(fastPathPrompt("a fox", "auto"), /pixels/);
+});
+
+test("isCompletePng: needs both the PNG signature and the IEND trailer", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pixmith-complete-"));
+  try {
+    const iend = Buffer.from([0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]);
+    const whole = path.join(dir, "whole.png");
+    const partial = path.join(dir, "partial.png");
+    await fs.writeFile(whole, Buffer.concat([FAKE_PNG, iend]));
+    await fs.writeFile(partial, FAKE_PNG); // still being written: no trailer yet
+    await fs.writeFile(path.join(dir, "tiny.png"), PNG_MAGIC);
+    await fs.writeFile(path.join(dir, "fake.png"), Buffer.concat([Buffer.from("not a png at all....."), iend]));
+    assert.equal(await isCompletePng(whole), true);
+    assert.equal(await isCompletePng(partial), false);
+    assert.equal(await isCompletePng(path.join(dir, "tiny.png")), false);
+    assert.equal(await isCompletePng(path.join(dir, "fake.png")), false);
+    assert.equal(await isCompletePng(path.join(dir, "missing.png")), false);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });
