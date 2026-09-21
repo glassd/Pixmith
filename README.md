@@ -1,7 +1,7 @@
 # Pixmith
 
 <p align="center">
-  <img src="assets/hero.png" alt="Pixmith — a wireframe hammer striking a glowing pixel on an anvil, sparks of light bursting outward" width="100%">
+  <img src="assets/hero.png" alt="Pixmith — a forging hammer coming down on a glowing cube of pixels on an anvil, square embers scattering to both sides" width="100%">
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
