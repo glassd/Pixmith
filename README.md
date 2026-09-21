@@ -74,7 +74,10 @@ MCP client ──MCP(stdio)──▶ Pixmith ──spawn──▶ codex exec "$i
    requested output directory, and validates it is a real PNG. If no file was written
    (seen on Windows), it decodes the image from the base64 in Codex's output or the
    session's rollout log instead.
-6. The same tool call returns the absolute path plus the image inline. If the job
+6. The same tool call returns the absolute path plus the image inline. MCP clients cap
+   the size of a tool result (Claude Desktop rejects anything over 1 MB) and these PNGs
+   are 2–3 MB, so the inline copy is a JPEG preview sized to fit, normally still at full
+   resolution. The full-quality PNG is always the file at the returned path. If the job
    outlasts the wait window (~45s), the call returns a `job_id` instead and the client
    collects the image with `get_image_result`.
 
@@ -318,7 +321,7 @@ when it differs.
 | `PIXMITH_TIMEOUT_MS`       | `300000` (5 min)                                     | Hard timeout per generation.                                    |
 | `PIXMITH_MAX_CONCURRENT`   | `1`                                                  | How many Codex generations may run at once. Extra jobs queue.   |
 | `PIXMITH_RETURN_IMAGE`     | `true`                                               | Set `false` to return only the path, never inline bytes.        |
-| `PIXMITH_MAX_INLINE_BYTES` | `6291456` (6 MB)                                     | Files larger than this return path-only (e.g. 4K images).       |
+| `PIXMITH_MAX_INLINE_BYTES` | `696320` (680 KB)                                    | Byte budget for the inline image. A PNG over it is sent as a JPEG preview that fits (quality 85, downscaled only if needed). The default keeps the whole result under Claude Desktop's 1 MB tool-result cap, since base64 adds a third. Raise it only for clients without that cap. |
 
 See [`.env.example`](.env.example) for a copy-paste starting point.
 
@@ -398,6 +401,7 @@ Or add the same `mcpServers` block above to a project-level `.mcp.json`.
 | `[generation_failed]` / `[no_output]`| Codex ran but produced nothing; see the `Detail:` stderr tail in the error. |
 | Windows: image isn't saved / sandbox error | Codex's OS sandbox is macOS/Linux only and blocks file writes on Windows. Pixmith bypasses it on Windows automatically (`PIXMITH_BYPASS_SANDBOX=true`). If you overrode that, unset it. |
 | Client times out during generation | No call waits longer than the wait window (45s by default). If your client's request timeout is shorter than ~60s, lower `PIXMITH_POLL_WAIT_MS` to match. The job keeps running either way — call `get_image_result` with no arguments to collect it. |
+| "Tool result is too large. Maximum size is 1MB." | Your client caps tool results and `PIXMITH_MAX_INLINE_BYTES` is set too high for it (versions before 0.5.1 defaulted to 6 MB). Remove the override, or set it to `696320` or lower. |
 | `[unknown_job]`                      | The job_id expired (>15 min) or nothing was started — call `generate_image` first. |
 | `[bad_request]`                      | The `size` breaks a gpt-image-2 limit (see [size limits](#size-limits)), `output_dir` is not absolute, or an input image is missing, too large, or not a PNG/JPEG/WebP/GIF. Fix the argument and retry. |
 | An edit changed more than asked      | Say explicitly what must stay the same ("change only X; keep Y unchanged"), and pass a fixed `size` if the framing moved. |

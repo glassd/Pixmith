@@ -7,6 +7,7 @@ import path from "node:path";
 import { PixmithError } from "../src/codex.js";
 import { JobManager } from "../src/jobs.js";
 import { createTools, formatError } from "../src/tools.js";
+import { noisyPng } from "../fixtures/noisy-png.js";
 
 const PNG = Buffer.concat([
   Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]),
@@ -14,7 +15,7 @@ const PNG = Buffer.concat([
   Buffer.alloc(64, 0),
 ]);
 
-async function setup({ pollWaitMs = 60, finishGraceMs = 0, generate, usage = null, creditsPolicy = "ask" } = {}) {
+async function setup({ pollWaitMs = 60, finishGraceMs = 0, generate, usage = null, creditsPolicy = "ask", maxInlineBytes = 1024 * 1024 } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pixmith-tools-"));
   const out = path.join(dir, "out.png");
   await fs.writeFile(out, PNG);
@@ -25,7 +26,7 @@ async function setup({ pollWaitMs = 60, finishGraceMs = 0, generate, usage = nul
       args.signal.addEventListener("abort", () => reject(new PixmithError("cancelled", "stopped")));
     });
   const jobs = new JobManager({ generate: generate ?? defaultGenerate });
-  const config = { pollWaitMs, finishGraceMs, returnImage: true, maxInlineBytes: 1024 * 1024, creditsPolicy, usageWarnPercent: 80 };
+  const config = { pollWaitMs, finishGraceMs, returnImage: true, maxInlineBytes, creditsPolicy, usageWarnPercent: 80 };
   const usageCalls = [];
   const readUsage = async (opts) => {
     usageCalls.push(opts);
@@ -334,6 +335,51 @@ test("usage: an edit that finishes after the wait window still carries usage whe
     const done = textOf(await t.call("get_image_result", {}));
     assert.match(done, /Image edited in/);
     assert.match(done, /Plan usage: 55% of the 5-hour limit/);
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test("inline image: a large PNG is returned as a preview and the whole result stays under 1 MB", async () => {
+  const t = await setup({ pollWaitMs: 5000, maxInlineBytes: 680 * 1024 });
+  try {
+    const big = path.join(t.dir, "big.png");
+    const data = noisyPng(1536, 1024); // ~4.7 MB of noise: far over Claude Desktop's 1 MB tool-result cap
+    await fs.writeFile(big, data);
+    assert.ok(data.length > 3 * 1024 * 1024);
+
+    const pending = t.call("generate_image", { prompt: "a fox" });
+    await new Promise((r) => setTimeout(r, 20));
+    t.calls[0].resolve(t.result({ path: big, bytes: data.length, size: "1536x1024" }));
+    const res = await pending;
+
+    assert.ok(JSON.stringify(res).length < 1_000_000, `result is ${JSON.stringify(res).length} bytes`);
+    const image = res.content.find((c) => c.type === "image");
+    assert.equal(image.mimeType, "image/jpeg");
+    assert.match(textOf(res), /Inline preview: \d+x\d+ JPEG, sized to fit the client's tool-result limit\. The full-quality PNG is at the path above\./);
+    assert.match(textOf(res), new RegExp(`Bytes: ${data.length}`), "the reported size is still the real PNG's");
+    assert.ok(textOf(res).indexOf("Inline preview") < textOf(res).indexOf("To change this image"));
+
+    // Fetching again reuses the preview instead of re-encoding it.
+    const again = await t.call("get_image_result", {});
+    assert.equal(again.content.find((c) => c.type === "image").data, image.data);
+    assert.equal((textOf(again).match(/Inline preview/g) || []).length, 1);
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test("inline image: a file that cannot be previewed degrades to a note, never an error", async () => {
+  const t = await setup({ pollWaitMs: 5000, maxInlineBytes: 10 });
+  try {
+    const pending = t.call("generate_image", { prompt: "a fox" });
+    await new Promise((r) => setTimeout(r, 20));
+    t.calls[0].resolve(t.result()); // the fixture is PNG-shaped but not decodable, and over this tiny budget
+    const res = await pending;
+    assert.equal(res.isError, undefined);
+    assert.match(textOf(res), /status: done/);
+    assert.match(textOf(res), /\(Could not inline image: .*Open it from the path above\.\)/);
+    assert.equal(res.content.some((c) => c.type === "image"), false);
   } finally {
     await t.cleanup();
   }
