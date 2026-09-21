@@ -1,6 +1,6 @@
 {
   "name": "pixmith",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "description": "Local MCP server that generates and edits images by driving the OpenAI Codex CLI on your ChatGPT subscription (no API key).",
   "type": "module",
@@ -17,7 +17,9 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.0"
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "jpeg-js": "^0.4.4",
+    "pngjs": "^7.0.0"
   },
   "license": "MIT"
 }

@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { normalizeSize } from "./config.js";
 import { PixmithError, STAGE_LABELS, validateInputImages, MAX_INPUT_IMAGES } from "./codex.js";
+import { makeInlineImage } from "./preview.js";
 import { creditGate, readUsage as readCodexUsage, usageLines } from "./usage.js";
 
 // Pixmith's MCP tool layer. A generation outlives the per-request timeout some
@@ -20,8 +21,6 @@ import { creditGate, readUsage as readCodexUsage, usageLines } from "./usage.js"
 //
 // While a call waits, progress notifications carry the real stage reported by
 // Codex plus elapsed / expected time, for clients that display them.
-
-const MIME = { png: "image/png" };
 
 /** Stages in which the image already exists and only bookkeeping remains. */
 const FINAL_STAGES = new Set(["finishing", "saving"]);
@@ -338,22 +337,28 @@ export function createTools({ jobs, config, readUsage = readCodexUsage }) {
     if (config.codexBinNote) lines.push(`Note: ${config.codexBinNote}`);
     lines.push(`job_id: ${job.id}`, "", `To change this image, call edit_image with image="${result.path}" and describe the change.`);
 
-    const content = [{ type: "text", text: lines.join("\n") }];
-    if (config.returnImage) {
-      if (result.bytes <= config.maxInlineBytes) {
-        try {
-          const data = await fs.readFile(result.path);
-          content.push({ type: "image", data: data.toString("base64"), mimeType: MIME.png });
-        } catch (err) {
-          content.push({ type: "text", text: `(Could not inline image: ${err.message})` });
-        }
-      } else {
-        content.push({
-          type: "text",
-          text: `(Image not inlined: ${result.bytes} bytes exceeds PIXMITH_MAX_INLINE_BYTES=${config.maxInlineBytes}. Open it from the path above.)`,
-        });
+    // Inline image. MCP clients cap the size of a tool result (Claude Desktop:
+    // 1 MB), so a PNG over the budget travels as a JPEG preview while the
+    // full-quality PNG stays at the path above. Built once per job.
+    if (config.returnImage && job.inline === undefined) {
+      try {
+        const inline = await makeInlineImage(result.path, config.maxInlineBytes);
+        job.inline = inline
+          ? {
+              item: { type: "image", data: inline.data.toString("base64"), mimeType: inline.mimeType },
+              note: inline.preview
+                ? `Inline preview: ${inline.width}x${inline.height} JPEG, sized to fit the client's tool-result limit. The full-quality PNG is at the path above.`
+                : null,
+            }
+          : { item: null, note: `(Image not inlined: no preview fits within PIXMITH_MAX_INLINE_BYTES=${config.maxInlineBytes}. Open it from the path above.)` };
+      } catch (err) {
+        job.inline = { item: null, note: `(Could not inline image: ${err.message}. Open it from the path above.)` };
       }
     }
+    if (job.inline?.note) lines.splice(lines.indexOf(""), 0, job.inline.note);
+
+    const content = [{ type: "text", text: lines.join("\n") }];
+    if (job.inline?.item) content.push(job.inline.item);
     return { content };
   }
 

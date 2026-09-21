@@ -221,9 +221,13 @@ export const config = {
   // estimate how long a generation will take). Git-ignored.
   stateDir: path.resolve(PROJECT_ROOT, envStr("PIXMITH_STATE_DIR", path.join(PROJECT_ROOT, ".pixmith"))),
 
-  // Whether to inline the PNG as MCP image content (base64), and the size cap.
+  // Whether to return the image inline as MCP image content (base64), and the
+  // byte budget for it. Clients cap tool results — Claude Desktop rejects more
+  // than 1 MB — so the default leaves room for base64's 4/3 growth plus the
+  // text: 680 KB of image is ~930 KB on the wire. A PNG over the budget is sent
+  // as a JPEG preview; the full PNG always stays on disk.
   returnImage: envBool("PIXMITH_RETURN_IMAGE", true),
-  maxInlineBytes: envInt("PIXMITH_MAX_INLINE_BYTES", 6 * 1024 * 1024),
+  maxInlineBytes: envInt("PIXMITH_MAX_INLINE_BYTES", 680 * 1024),
 };
 
 /**
