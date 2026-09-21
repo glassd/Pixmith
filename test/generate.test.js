@@ -22,6 +22,7 @@ process.env.PIXMITH_CODEX_MODEL = "gpt-test-mini";
 process.env.PIXMITH_CODEX_EFFORT = "low";
 
 const { generateImage } = await import("../src/codex.js");
+const { readUsage } = await import("../src/usage.js");
 const lastCall = async () => JSON.parse(await fs.readFile(path.join(codexHome, "last-call.json"), "utf8"));
 const reset = () => fs.rm(path.join(codexHome, "generated_images"), { recursive: true, force: true });
 
@@ -116,4 +117,37 @@ test("generateImage: classifies usage limits and refusals", { skip }, async () =
   await assert.rejects(generateImage({ prompt: "a fox" }), (e) => e.kind === "usage_limit" && /usage limit/.test(e.detail));
   process.env.FAKE_MODE = "refuse";
   await assert.rejects(generateImage({ prompt: "a fox" }), (e) => e.kind === "generation_failed" && /content policy/.test(e.message));
+});
+
+test("readUsage: newest session log wins, the job's own log is preferred, big logs are read from the tail", { skip }, async () => {
+  const dir = path.join(codexHome, "sessions", "2026", "09", "21");
+  await fs.mkdir(dir, { recursive: true });
+  const entry = (used, ts) =>
+    JSON.stringify({
+      timestamp: ts,
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        rate_limits: {
+          primary: { used_percent: used, window_minutes: 300, resets_at: Date.now() / 1000 + 3600 },
+          secondary: { used_percent: 1, window_minutes: 10080, resets_at: Date.now() / 1000 + 86400 },
+          credits: { has_credits: false, unlimited: false, balance: "0" },
+          plan_type: "plus",
+        },
+      },
+    });
+  const older = path.join(dir, "rollout-a-11111111-1111-1111-1111-111111111111.jsonl");
+  const newer = path.join(dir, "rollout-b-22222222-2222-2222-2222-222222222222.jsonl");
+  // The newer log is large, like a real one that carries a base64 image, with the snapshot at the end.
+  await fs.writeFile(older, `${entry(10, "2026-09-21T10:00:00Z")}\n`);
+  await fs.writeFile(newer, `${JSON.stringify({ payload: { blob: "A".repeat(400_000) } })}\n${entry(42, "2026-09-21T11:00:00Z")}\n`);
+  const past = new Date(Date.now() - 60_000);
+  await fs.utimes(older, past, past);
+
+  assert.equal((await readUsage()).windows[0].usedPercent, 42);
+  // Asking for a specific session still returns the freshest snapshot overall.
+  assert.equal((await readUsage({ sessionId: "11111111-1111-1111-1111-111111111111" })).windows[0].usedPercent, 42);
+
+  await fs.rm(path.join(codexHome, "sessions"), { recursive: true, force: true });
+  assert.equal(await readUsage(), null);
 });

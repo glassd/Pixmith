@@ -39,6 +39,15 @@ function envPattern(name, pattern) {
   return null;
 }
 
+/** One of a fixed set of words (case-insensitive); anything else falls back, with a startup warning. */
+function envChoice(name, choices, fallback) {
+  const v = envStr(name, null);
+  if (!v) return fallback;
+  if (choices.includes(v.toLowerCase())) return v.toLowerCase();
+  configWarnings.push(`${name}="${v}" is not one of ${choices.join(", ")}; using "${fallback}".`);
+  return fallback;
+}
+
 function envBool(name, fallback) {
   const raw = process.env[name];
   if (raw == null || raw.trim() === "") return fallback;
@@ -197,6 +206,16 @@ export const config = {
   get finishGraceMs() {
     return Math.max(0, Math.min(8_000, 58_000 - this.pollWaitMs));
   },
+
+  // Plan usage reporting. Codex records the ChatGPT plan's limits in its session
+  // logs; Pixmith adds them to each result and warns past this percentage.
+  showUsage: envBool("PIXMITH_SHOW_USAGE", true),
+  usageWarnPercent: Math.min(100, envInt("PIXMITH_USAGE_WARN_PERCENT", 80)),
+
+  // What to do once the plan's limit is used up and a job would run on paid
+  // credits: "ask" (refuse until the caller passes use_credits: true),
+  // "always" (just run), or "never" (always refuse).
+  creditsPolicy: envChoice("PIXMITH_USE_CREDITS", ["ask", "always", "never"], "ask"),
 
   // Where Pixmith keeps its own small state (recent job durations, used to
   // estimate how long a generation will take). Git-ignored.
