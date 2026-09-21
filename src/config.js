@@ -161,6 +161,13 @@ export const config = {
   // client's per-request timeout (commonly 60s) — lower it for stricter clients.
   pollWaitMs: Math.min(55_000, Math.max(2_000, envInt("PIXMITH_POLL_WAIT_MS", 45_000))),
 
+  // Extra time a call may wait past pollWaitMs when the job is already in its
+  // final stage (Codex done, image being collected). Capped so that no call
+  // ever exceeds 58s in total.
+  get finishGraceMs() {
+    return Math.max(0, Math.min(8_000, 58_000 - this.pollWaitMs));
+  },
+
   // Where Pixmith keeps its own small state (recent job durations, used to
   // estimate how long a generation will take). Git-ignored.
   stateDir: path.resolve(PROJECT_ROOT, envStr("PIXMITH_STATE_DIR", path.join(PROJECT_ROOT, ".pixmith"))),

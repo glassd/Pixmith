@@ -14,7 +14,7 @@ const PNG = Buffer.concat([
   Buffer.alloc(64, 0),
 ]);
 
-async function setup({ pollWaitMs = 60, generate } = {}) {
+async function setup({ pollWaitMs = 60, finishGraceMs = 0, generate } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pixmith-tools-"));
   const out = path.join(dir, "out.png");
   await fs.writeFile(out, PNG);
@@ -25,7 +25,7 @@ async function setup({ pollWaitMs = 60, generate } = {}) {
       args.signal.addEventListener("abort", () => reject(new PixmithError("cancelled", "stopped")));
     });
   const jobs = new JobManager({ generate: generate ?? defaultGenerate });
-  const config = { pollWaitMs, returnImage: true, maxInlineBytes: 1024 * 1024 };
+  const config = { pollWaitMs, finishGraceMs, returnImage: true, maxInlineBytes: 1024 * 1024 };
   const { tools, call } = createTools({ jobs, config });
   const result = (extra = {}) => ({
     path: out,
@@ -184,6 +184,31 @@ test("errors: bad arguments fail fast, failures carry a next step", async () => 
     assert.equal(res.isError, true);
     assert.match(textOf(res), /\[usage_limit\] limit reached\n\nNext step: .*\n\nDetail:\nstderr tail/);
     assert.equal(formatError(new Error("odd")), "Unexpected error: odd");
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test("grace period: a job already finishing when the window closes is returned by the same call", async () => {
+  const t = await setup({ pollWaitMs: 40, finishGraceMs: 2000 });
+  try {
+    // Finishing stage: the call outlasts the window and returns the image.
+    const pending = t.call("generate_image", { prompt: "a fox" });
+    await new Promise((r) => setTimeout(r, 10));
+    t.calls[0].args.onStage("finishing");
+    setTimeout(() => t.calls[0].resolve(t.result()), 90);
+    const t0 = Date.now();
+    const res = await pending;
+    assert.match(textOf(res), /status: done/);
+    assert.ok(Date.now() - t0 < 1000, "returns as soon as the job settles, not after the full grace");
+
+    // Still rendering: no grace, the call returns at the window.
+    const slow = t.call("generate_image", { prompt: "a fox" });
+    await new Promise((r) => setTimeout(r, 10));
+    t.calls[1].args.onStage("rendering");
+    const t1 = Date.now();
+    assert.match(textOf(await slow), /status: running/);
+    assert.ok(Date.now() - t1 < 500);
   } finally {
     await t.cleanup();
   }

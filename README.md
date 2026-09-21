@@ -170,7 +170,9 @@ A generation is a Codex agent session, so it takes roughly 30–40s (edits about
 that) — close to the per-request timeout some MCP clients enforce. Pixmith therefore
 never blocks a single call for longer than the **wait window** (`PIXMITH_POLL_WAIT_MS`,
 default 45s). A typical generation fits inside it, so the usual flow is **one tool
-call that returns the image**. Slower jobs fall back to a `job_id` plus
+call that returns the image**. If the window closes while Codex has already finished and
+the image is only being collected, the call waits up to 8s more (never beyond 58s in
+total) rather than costing another round trip. Slower jobs fall back to a `job_id` plus
 `get_image_result`. The assistant drives all of this automatically.
 
 ### `generate_image` — make an image

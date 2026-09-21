@@ -109,3 +109,12 @@ test("resolveCodexBin: override, auto-detection, and recovery from a stale overr
   // Stale with nothing better: keep it, so the error names the configured path.
   assert.deepEqual(resolveCodexBin("/gone/codex", candidates, only()), { bin: "/gone/codex", note: null });
 });
+
+test("finishGraceMs: up to 8s, and never lets a call exceed 58s in total", () => {
+  assert.ok(config.finishGraceMs >= 0 && config.finishGraceMs <= 8000);
+  assert.ok(config.pollWaitMs + config.finishGraceMs <= 58_000);
+  const at = (pollWaitMs) => Object.getOwnPropertyDescriptor(config, "finishGraceMs").get.call({ pollWaitMs });
+  assert.equal(at(45_000), 8000);
+  assert.equal(at(55_000), 3000);
+  assert.equal(at(60_000), 0);
+});
