@@ -24,6 +24,21 @@ function envStr(name, fallback) {
   return raw == null || raw.trim() === "" ? fallback : raw.trim();
 }
 
+/** Settings that were present but unusable; index.js reports them at startup. */
+export const configWarnings = [];
+
+/**
+ * A string setting that is passed to the Codex command line. It is ignored —
+ * with a startup warning — unless it matches `pattern`.
+ */
+function envPattern(name, pattern) {
+  const v = envStr(name, null);
+  if (!v) return null;
+  if (pattern.test(v)) return v;
+  configWarnings.push(`${name}="${v}" is not a valid value and was ignored; Codex's own default is used instead.`);
+  return null;
+}
+
 function envBool(name, fallback) {
   const raw = process.env[name];
   if (raw == null || raw.trim() === "") return fallback;
@@ -68,6 +83,11 @@ function codexCandidates() {
       path.join(HOME, "Applications/Codex.app/Contents/Resources/codex"),
       "/opt/homebrew/bin/codex",
       "/usr/local/bin/codex",
+      // The standalone installer's location. It must be listed explicitly: apps
+      // launched from the Dock (e.g. Claude Desktop) do not inherit the shell's
+      // PATH, so a bare `codex` would not resolve there.
+      path.join(HOME, ".local/bin/codex"),
+      path.join(HOME, "bin/codex"),
     ];
   }
   // linux and others
@@ -79,25 +99,47 @@ function codexCandidates() {
   ];
 }
 
-/** Resolve the Codex binary: explicit env override, else first existing candidate, else PATH. */
-function resolveCodexBin() {
-  const override = envStr("CODEX_BIN", null);
-  if (override) return override;
-  for (const candidate of codexCandidates()) {
+const looksLikePath = (p) => path.isAbsolute(p) || p.includes("/") || p.includes("\\");
+
+/**
+ * Resolve the Codex binary: explicit override, else first existing candidate,
+ * else the bare command on PATH. Returns { bin, note }.
+ *
+ * A CODEX_BIN that points at a file which no longer exists (Codex was moved or
+ * reinstalled after the MCP client was configured) does not fail every job:
+ * when auto-detection finds a working binary it is used instead, and `note`
+ * says so, so the stale setting can be cleaned up.
+ */
+export function resolveCodexBin(override, candidates, exists = fssync.existsSync) {
+  const found = candidates.find((c) => {
     try {
-      if (path.isAbsolute(candidate) && fssync.existsSync(candidate)) return candidate;
+      return path.isAbsolute(c) && exists(c);
     } catch {
-      /* ignore and keep trying */
+      return false;
     }
+  });
+  if (override) {
+    if (!looksLikePath(override) || exists(override)) return { bin: override, note: null };
+    if (found) {
+      return {
+        bin: found,
+        note: `CODEX_BIN is set to "${override}", which does not exist. Pixmith used the auto-detected "${found}" instead — update or remove CODEX_BIN in your MCP client's config.`,
+      };
+    }
+    return { bin: override, note: null }; // nothing better; the error will name this path
   }
-  return "codex"; // rely on PATH
+  return { bin: found ?? "codex", note: null }; // bare name: rely on PATH
 }
+
+const codex = resolveCodexBin(envStr("CODEX_BIN", null), codexCandidates());
 
 export const config = {
   version: readPackageVersion(),
 
   // Path to the Codex binary, or a bare command resolved on PATH.
-  codexBin: resolveCodexBin(),
+  codexBin: codex.bin,
+  // Set when a stale CODEX_BIN override was replaced by auto-detection.
+  codexBinNote: codex.note,
   // Every candidate we considered — used to build a helpful "not found" error.
   codexCandidates: codexCandidates(),
 
@@ -117,6 +159,21 @@ export const config = {
     envStr("PIXMITH_OUTPUT_DIR", path.join(PROJECT_ROOT, "images")),
   ),
 
+  // Stop Codex as soon as the finished PNG is on disk instead of waiting for
+  // the agent's closing "DONE" turn (which re-uploads the image to the model).
+  earlyExit: envBool("PIXMITH_EARLY_EXIT", true),
+
+  // Give the agent the image prompt in a file instead of making it retype the
+  // text into its tool call (the slowest part of the agent wrapper for long
+  // prompts). Relies on a POSIX `cat`, so it is off on Windows by default.
+  fastPrompt: envBool("PIXMITH_FAST_PROMPT", process.platform !== "win32"),
+
+  // Optional model / reasoning effort for the agent that wraps the image_gen
+  // call. Unset = whatever ~/.codex/config.toml says. The image model itself
+  // (gpt-image-2) is not affected.
+  codexModel: envPattern("PIXMITH_CODEX_MODEL", /^[\w.:-]+$/),
+  codexEffort: envPattern("PIXMITH_CODEX_EFFORT", /^[a-z]+$/),
+
   // CODEX_HOME holds generated_images/<session>/ig_*.png and sessions/**.jsonl.
   codexHome: envStr("CODEX_HOME", path.join(HOME, ".codex")),
 
@@ -133,6 +190,13 @@ export const config = {
   // most images come back from the very first call. Must stay under the
   // client's per-request timeout (commonly 60s) — lower it for stricter clients.
   pollWaitMs: Math.min(55_000, Math.max(2_000, envInt("PIXMITH_POLL_WAIT_MS", 45_000))),
+
+  // Extra time a call may wait past pollWaitMs when the job is already in its
+  // final stage (Codex done, image being collected). Capped so that no call
+  // ever exceeds 58s in total.
+  get finishGraceMs() {
+    return Math.max(0, Math.min(8_000, 58_000 - this.pollWaitMs));
+  },
 
   // Where Pixmith keeps its own small state (recent job durations, used to
   // estimate how long a generation will take). Git-ignored.

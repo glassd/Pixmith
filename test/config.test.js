@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { normalizeSize, SIZE_LIMITS, config } from "../src/config.js";
+import { normalizeSize, resolveCodexBin, SIZE_LIMITS, config } from "../src/config.js";
 
 test("config.version matches package.json", async () => {
   const { default: pkg } = await import("../package.json", { with: { type: "json" } });
@@ -87,4 +87,34 @@ test("normalizeSize: every accepted value satisfies SIZE_LIMITS", () => {
     assert.ok(Math.max(w, h) / Math.min(w, h) <= SIZE_LIMITS.maxRatio, `${s} ratio`);
     assert.ok(w * h >= SIZE_LIMITS.minPixels && w * h <= SIZE_LIMITS.maxPixels, `${s} pixels`);
   }
+});
+
+test("resolveCodexBin: override, auto-detection, and recovery from a stale override", () => {
+  const candidates = ["/opt/a/codex", "/home/u/.local/bin/codex"];
+  const only = (...present) => (p) => present.includes(p);
+
+  // No override: first existing candidate, else the bare command for PATH lookup.
+  assert.deepEqual(resolveCodexBin(null, candidates, only("/home/u/.local/bin/codex")), { bin: "/home/u/.local/bin/codex", note: null });
+  assert.deepEqual(resolveCodexBin(null, candidates, only()), { bin: "codex", note: null });
+
+  // A valid override, or a bare command name, is always honoured.
+  assert.equal(resolveCodexBin("/custom/codex", candidates, only("/custom/codex", "/opt/a/codex")).bin, "/custom/codex");
+  assert.deepEqual(resolveCodexBin("codex-nightly", candidates, only("/opt/a/codex")), { bin: "codex-nightly", note: null });
+
+  // A stale override falls back to auto-detection and explains itself.
+  const stale = resolveCodexBin("/Applications/Codex.app/Contents/Resources/codex", candidates, only("/home/u/.local/bin/codex"));
+  assert.equal(stale.bin, "/home/u/.local/bin/codex");
+  assert.match(stale.note, /CODEX_BIN is set to "\/Applications\/Codex\.app.*does not exist.*update or remove CODEX_BIN/s);
+
+  // Stale with nothing better: keep it, so the error names the configured path.
+  assert.deepEqual(resolveCodexBin("/gone/codex", candidates, only()), { bin: "/gone/codex", note: null });
+});
+
+test("finishGraceMs: up to 8s, and never lets a call exceed 58s in total", () => {
+  assert.ok(config.finishGraceMs >= 0 && config.finishGraceMs <= 8000);
+  assert.ok(config.pollWaitMs + config.finishGraceMs <= 58_000);
+  const at = (pollWaitMs) => Object.getOwnPropertyDescriptor(config, "finishGraceMs").get.call({ pollWaitMs });
+  assert.equal(at(45_000), 8000);
+  assert.equal(at(55_000), 3000);
+  assert.equal(at(60_000), 0);
 });

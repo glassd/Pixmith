@@ -17,6 +17,9 @@ process.env.CODEX_BIN = fileURLToPath(new URL("../fixtures/fake-codex.cjs", impo
 process.env.CODEX_HOME = codexHome;
 process.env.PIXMITH_OUTPUT_DIR = outDir;
 process.env.PIXMITH_BYPASS_SANDBOX = "false";
+process.env.PIXMITH_FAST_PROMPT = "true";
+process.env.PIXMITH_CODEX_MODEL = "gpt-test-mini";
+process.env.PIXMITH_CODEX_EFFORT = "low";
 
 const { generateImage } = await import("../src/codex.js");
 const lastCall = async () => JSON.parse(await fs.readFile(path.join(codexHome, "last-call.json"), "utf8"));
@@ -36,11 +39,33 @@ test("generateImage: finds the session's PNG via JSON events and reports stages"
   assert.equal(path.dirname(res.path), outDir);
   assert.ok(res.durationMs >= 0);
 
-  const { args, stdin } = await lastCall();
+  assert.equal(res.stoppedEarly, false);
+
+  const { args, stdin, promptFile, promptFileText } = await lastCall();
   assert.ok(args.includes("--json"));
   assert.ok(!args.includes("-i"));
   assert.equal(args.at(-1), "-");
+  assert.equal(args[args.indexOf("-m") + 1], "gpt-test-mini");
+  assert.ok(args.includes('model_reasoning_effort="low"'));
   assert.match(stdin, /IMAGE PROMPT: a fox/);
+
+  // Fast path: the ready-made image_gen prompt travels in a file, which is removed afterwards.
+  assert.match(stdin, /FAST PATH/);
+  assert.match(promptFileText, /^Generate exactly ONE raster image\. The image must be 1024x1024 pixels\./);
+  assert.match(promptFileText, /\n\na fox\n$/);
+  await assert.rejects(fs.access(promptFile));
+});
+
+test("generateImage: stops Codex as soon as the finished PNG is on disk", { skip }, async () => {
+  process.env.FAKE_MODE = "early";
+  await reset();
+  const stages = [];
+  const t0 = Date.now();
+  const res = await generateImage({ prompt: "a fox", onStage: (s) => stages.push(s) });
+  assert.equal(res.stoppedEarly, true);
+  assert.equal(res.size, "1024x768");
+  assert.ok(Date.now() - t0 < 5000, "did not wait for the hung closing turn");
+  assert.deepEqual(stages, ["starting", "session_started", "saving"]);
 });
 
 test("generateImage: edit mode attaches each image with its own -i flag", { skip }, async () => {
@@ -63,6 +88,7 @@ test("generateImage: edit mode attaches each image with its own -i flag", { skip
   assert.deepEqual(flags, [src, ref]);
   assert.notEqual(args[args.lastIndexOf("-i") + 2], "-", "the prompt sentinel never directly follows the image list");
   assert.match(stdin, /EDIT INSTRUCTION: make it night/);
+  assert.doesNotMatch(stdin, /FAST PATH/, "edits keep the agent's own prompt rewrite");
   assert.match(stdin, /- Image 1: edit target/);
 });
 

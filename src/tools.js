@@ -11,6 +11,8 @@ import { PixmithError, STAGE_LABELS, validateInputImages, MAX_INPUT_IMAGES } fro
 //   generate_image / edit_image  start a job and wait up to the window. A
 //                                typical image finishes inside it, so the
 //                                common case is ONE call that returns the image.
+//                                (A job caught in its final stage when the
+//                                window closes gets config.finishGraceMs more.)
 //   get_image_result             picks up a job that needed longer (job_id
 //                                optional — defaults to the latest job).
 //   cancel_image                 stops a queued or running job.
@@ -19,6 +21,9 @@ import { PixmithError, STAGE_LABELS, validateInputImages, MAX_INPUT_IMAGES } fro
 // Codex plus elapsed / expected time, for clients that display them.
 
 const MIME = { png: "image/png" };
+
+/** Stages in which the image already exists and only bookkeeping remains. */
+const FINAL_STAGES = new Set(["finishing", "saving"]);
 
 const secs = (ms) => Math.max(0, Math.round(ms / 1000));
 
@@ -239,6 +244,12 @@ export function createTools({ jobs, config }) {
     const heartbeat = setInterval(tick, 3000);
     try {
       await jobs.wait(job, config.pollWaitMs, extra?.signal);
+      // Codex has already finished and the image is only being collected: a
+      // short grace here returns the image now instead of costing the client
+      // another round trip for the sake of a second or two.
+      if (jobs.isActive(job) && FINAL_STAGES.has(job.stage) && !extra?.signal?.aborted) {
+        await jobs.wait(job, config.finishGraceMs ?? 0, extra?.signal);
+      }
     } finally {
       clearInterval(heartbeat);
     }
@@ -290,6 +301,7 @@ export function createTools({ jobs, config }) {
     ];
     if (job.mode === "edit" && result.inputImages?.length) lines.push(`Edited from: ${result.inputImages[0]}`);
     if (result.codexHomeCopy && result.codexHomeCopy !== result.path) lines.push(`Codex copy: ${result.codexHomeCopy}`);
+    if (config.codexBinNote) lines.push(`Note: ${config.codexBinNote}`);
     lines.push(`job_id: ${job.id}`, "", `To change this image, call edit_image with image="${result.path}" and describe the change.`);
 
     const content = [{ type: "text", text: lines.join("\n") }];
