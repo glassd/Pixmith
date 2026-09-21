@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { normalizeSize } from "./config.js";
 import { PixmithError, STAGE_LABELS, validateInputImages, MAX_INPUT_IMAGES } from "./codex.js";
+import { creditGate, readUsage as readCodexUsage, usageLines } from "./usage.js";
 
 // Pixmith's MCP tool layer. A generation outlives the per-request timeout some
 // MCP clients enforce, so no tool call ever blocks for longer than
@@ -27,7 +28,18 @@ const FINAL_STAGES = new Set(["finishing", "saving"]);
 
 const secs = (ms) => Math.max(0, Math.round(ms / 1000));
 
-export function createTools({ jobs, config }) {
+export function createTools({ jobs, config, readUsage = readCodexUsage }) {
+  // Usage reporting is best-effort: a failure to read Codex's logs must never
+  // fail a job or hide its result.
+  const safeUsage = async (opts) => {
+    if (config.showUsage === false) return null;
+    try {
+      return await readUsage(opts);
+    } catch {
+      return null;
+    }
+  };
+
   const waitSecs = secs(config.pollWaitMs);
   const typical = () => `~${secs(jobs.stats.estimate("generate"))}s`;
 
@@ -50,6 +62,12 @@ export function createTools({ jobs, config }) {
     description:
       `Optional, default true: wait up to ~${waitSecs}s and return the finished image directly when it is ready in time. ` +
       "Set false to return the job_id at once (useful for starting several jobs back to back).",
+  };
+  const creditsProperty = {
+    type: "boolean",
+    description:
+      "Optional, default false. Only relevant once the ChatGPT plan's Codex limit is used up: Pixmith then refuses to start a job " +
+      "and explains why. Set true ONLY after the user has explicitly agreed to continue on paid credits.",
   };
   const referenceProperty = {
     type: "array",
@@ -76,6 +94,7 @@ export function createTools({ jobs, config }) {
         reference_images: referenceProperty,
         output_dir: outputDirProperty,
         wait: waitProperty,
+        use_credits: creditsProperty,
       },
       required: ["prompt"],
       additionalProperties: false,
@@ -105,6 +124,7 @@ export function createTools({ jobs, config }) {
         size: sizeProperty(true),
         output_dir: outputDirProperty,
         wait: waitProperty,
+        use_credits: creditsProperty,
       },
       required: ["image", "prompt"],
       additionalProperties: false,
@@ -168,6 +188,9 @@ export function createTools({ jobs, config }) {
     if (args.wait != null && typeof args.wait !== "boolean") {
       throw new PixmithError("bad_request", "`wait` must be true or false.");
     }
+    if (args.use_credits != null && typeof args.use_credits !== "boolean") {
+      throw new PixmithError("bad_request", "`use_credits` must be true or false.");
+    }
     return { prompt: prompt.trim(), size: requestedSize, sizeNote: sizeCheck.note, outputDir, wait: args.wait !== false };
   }
 
@@ -187,6 +210,13 @@ export function createTools({ jobs, config }) {
       paths.push(...args.reference_images);
     }
     const images = await validateInputImages(paths);
+
+    // Plan limit already used up? Then this job would run on paid credits (or
+    // simply fail), so it only starts with the user's say-so.
+    const gate = creditGate(await safeUsage(), { policy: config.creditsPolicy, useCredits: args.use_credits === true });
+    if (gate.action !== "proceed") {
+      throw new PixmithError(gate.action === "block" ? "usage_limit" : "credits_confirmation_needed", gate.message);
+    }
 
     const job = jobs.create({
       prompt: common.prompt,
@@ -301,6 +331,7 @@ export function createTools({ jobs, config }) {
     ];
     if (job.mode === "edit" && result.inputImages?.length) lines.push(`Edited from: ${result.inputImages[0]}`);
     if (result.codexHomeCopy && result.codexHomeCopy !== result.path) lines.push(`Codex copy: ${result.codexHomeCopy}`);
+    lines.push(...usageLines(await safeUsage({ sessionId: result.sessionId }), { warnPercent: config.usageWarnPercent }));
     if (config.codexBinNote) lines.push(`Note: ${config.codexBinNote}`);
     lines.push(`job_id: ${job.id}`, "", `To change this image, call edit_image with image="${result.path}" and describe the change.`);
 
@@ -410,7 +441,9 @@ function text(lines) {
 const NEXT_STEPS = {
   binary_missing: "Install the Codex CLI or the Codex desktop app, or set CODEX_BIN, then retry.",
   not_signed_in: "Run `codex login` (or sign in from the Codex app), then retry.",
-  usage_limit: "Nothing is wrong with the request. Retry once the ChatGPT plan's limit has reset.",
+  usage_limit:
+    "Nothing is wrong with the request. Retry once the ChatGPT plan's limit has reset, or add credits in ChatGPT under Settings > Usage.",
+  credits_confirmation_needed: "Ask the user; do not retry with use_credits: true unless they agree.",
   timeout: "Retry, use a smaller size, or raise PIXMITH_TIMEOUT_MS.",
   generation_failed: "If the request was refused, rephrase the prompt; otherwise retry.",
   no_output: "Retry once. If it keeps failing, run `codex exec \"hello\"` to check that Codex itself works.",

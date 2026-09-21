@@ -26,6 +26,9 @@ that same image.
 - **Editing.** `edit_image` changes an existing image — a previous result or any local
   file — and both tools accept reference images.
 - **Cancellation.** `cancel_image` stops a job and its Codex session immediately.
+- **Usage awareness.** Every result shows how much of your ChatGPT plan's Codex limit is
+  used and when it resets, warns when you are close, and asks before a job would run on
+  paid credits.
 
 **Why Pixmith?** Codex can be signed in with your **ChatGPT account**, so image
 generation runs against your existing ChatGPT plan instead of a separate, metered image
@@ -190,6 +193,7 @@ total) rather than costing another round trip. Slower jobs fall back to a `job_i
 | `reference_images` | string[] | ❌       | Up to 4 absolute paths of images (PNG, JPEG, WebP, GIF) to use as style, composition or subject references. |
 | `output_dir`       | string   | ❌       | Absolute directory to save into. Defaults to Pixmith's `images/` folder.                   |
 | `wait`             | boolean  | ❌       | Default `true`: wait up to the wait window and return the image directly. `false` returns the `job_id` at once — handy for starting several jobs back to back. |
+| `use_credits`      | boolean  | ❌       | Only matters once the plan limit is used up: confirms that you agreed to continue on paid credits. See [plan usage and credits](#plan-usage-and-credits). |
 
 Invalid sizes, relative `output_dir` paths and unreadable input images are rejected
 here, before any Codex session starts. If more than `PIXMITH_MAX_CONCURRENT` jobs are in
@@ -203,7 +207,7 @@ flight the new one is reported as `status: queued` with its position.
 | `prompt`           | string   | ✅       | What to change. Say what must stay the same, e.g. "make the sky stormy; keep everything else unchanged". |
 | `reference_images` | string[] | ❌       | Extra images to borrow style or content from (up to 4 images in total).     |
 | `size`             | string   | ❌       | As above. Defaults to `auto`, which keeps the source's aspect ratio.         |
-| `output_dir`, `wait` |        | ❌       | As for `generate_image`.                                                    |
+| `output_dir`, `wait`, `use_credits` | | ❌  | As for `generate_image`.                                                    |
 
 The source file is never modified; the edit is saved as a new PNG. Every finished result
 ends with the exact `edit_image` call that would refine it, so iterating is a one-liner
@@ -231,6 +235,30 @@ arguments to recover it.
 A queued job is dropped; a running job's Codex session is killed at once, so it stops
 using your ChatGPT quota. Pixmith also stops every running session when the MCP client
 disconnects.
+
+### Plan usage and credits
+
+Codex records your ChatGPT plan's limits in its session logs. Pixmith reads the latest
+snapshot (it never reads auth tokens) and ends every finished result with a line like:
+
+```
+Plan usage: 16% of the 5-hour limit (resets at 21:37), 3% of the weekly limit (resets Wed at 17:36).
+```
+
+Past `PIXMITH_USAGE_WARN_PERCENT` (default 80%) a warning is added, saying what happens
+next: either jobs will continue on paid credits and how many you have, or they will stop
+until the reset unless you add credits (ChatGPT → Settings → Usage, or Usage & Billing in
+the Codex app).
+
+Once a limit is fully used, Codex would draw on purchased credits automatically. Pixmith
+does not let that happen silently. `generate_image` and `edit_image` refuse to start
+with `[credits_confirmation_needed]` and tell the assistant to ask you. If you agree,
+the assistant repeats the call with `use_credits: true`. Set `PIXMITH_USE_CREDITS` to
+`always` to skip the question or `never` to refuse outright. Pixmith never buys credits.
+
+The snapshot is only as fresh as your last Codex run, so usage from other Codex sessions
+since then is not reflected, and credits bought a minute ago may not show yet — which is
+why the confirmation can always be overridden with `use_credits: true`.
 
 ### Progress feedback
 
@@ -279,6 +307,9 @@ when it differs.
 | `PIXMITH_FAST_PROMPT`      | `true` (`false` on Windows)                          | Hand the image prompt to the agent in a temp file so it does not retype it into its tool call (saves ~1s per 150 characters of prompt). Generations only; edits keep the agent's own rewrite. Falls back to the normal path if Codex's script tools are unavailable. |
 | `PIXMITH_CODEX_MODEL`      | *(Codex config)*                                     | Model for the agent that wraps the image call, e.g. a faster one. Does not change the image model. In testing this made little difference — the wrapper's cost is output speed, which the fast path removes. A value with characters outside letters, digits, `.`, `:`, `-`, `_` is ignored, with a warning in the server's startup log. |
 | `PIXMITH_CODEX_EFFORT`     | *(Codex config)*                                     | Reasoning effort for that agent (`low`, `medium`, …).            |
+| `PIXMITH_SHOW_USAGE`       | `true`                                               | Add the plan usage line (and near-limit warning) to results.    |
+| `PIXMITH_USAGE_WARN_PERCENT` | `80`                                               | Warn once any plan window is this full.                          |
+| `PIXMITH_USE_CREDITS`      | `ask`                                                | When the plan limit is used up: `ask` (require `use_credits: true`), `always` (run on credits without asking), or `never` (refuse). |
 | `PIXMITH_STATE_DIR`        | `<project>/.pixmith`                                 | Where Pixmith keeps its recent job durations (used for time estimates). |
 | `PIXMITH_OUTPUT_DIR`       | `<project>/images`                                   | Default output directory for generated PNGs.                    |
 | `CODEX_HOME`               | `~/.codex`                                            | Codex home (used to locate the backup `generated_images/` copy). |
@@ -360,7 +391,8 @@ Or add the same `mcpServers` block above to a project-level `.mcp.json`.
 | `[binary_missing]`                   | Codex CLI not found in `CODEX_BIN` or any of the usual locations — install it, or set `CODEX_BIN` to the correct path. Apps launched from the Dock don't see your shell's `PATH`, so use an absolute path. |
 | `[not_signed_in]`                    | Sign in to Codex (ChatGPT account) or configure an API key, then retry.     |
 | `[timeout]`                          | Large image or slow service — raise `PIXMITH_TIMEOUT_MS`.                    |
-| `[usage_limit]`                      | Your ChatGPT plan's image/Codex limit was reached. Retry after it resets.   |
+| `[usage_limit]`                      | Your ChatGPT plan's image/Codex limit was reached. Retry after it resets, or add credits. |
+| `[credits_confirmation_needed]`      | The plan limit is used up and the job would run on paid credits. Tell the assistant whether to continue; see [plan usage and credits](#plan-usage-and-credits). |
 | `[generation_failed]` / `[no_output]`| Codex ran but produced nothing; see the `Detail:` stderr tail in the error. |
 | Windows: image isn't saved / sandbox error | Codex's OS sandbox is macOS/Linux only and blocks file writes on Windows. Pixmith bypasses it on Windows automatically (`PIXMITH_BYPASS_SANDBOX=true`). If you overrode that, unset it. |
 | Client times out during generation | No call waits longer than the wait window (45s by default). If your client's request timeout is shorter than ~60s, lower `PIXMITH_POLL_WAIT_MS` to match. The job keeps running either way — call `get_image_result` with no arguments to collect it. |

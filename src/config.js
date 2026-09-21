@@ -198,6 +198,16 @@ export const config = {
     return Math.max(0, Math.min(8_000, 58_000 - this.pollWaitMs));
   },
 
+  // Plan usage reporting. Codex records the ChatGPT plan's limits in its session
+  // logs; Pixmith adds them to each result and warns past this percentage.
+  showUsage: envBool("PIXMITH_SHOW_USAGE", true),
+  usageWarnPercent: Math.min(100, envInt("PIXMITH_USAGE_WARN_PERCENT", 80)),
+
+  // What to do once the plan's limit is used up and a job would run on paid
+  // credits: "ask" (refuse until the caller passes use_credits: true),
+  // "always" (just run), or "never" (always refuse).
+  creditsPolicy: ((v) => (["ask", "always", "never"].includes(v) ? v : "ask"))(envStr("PIXMITH_USE_CREDITS", "ask").toLowerCase()),
+
   // Where Pixmith keeps its own small state (recent job durations, used to
   // estimate how long a generation will take). Git-ignored.
   stateDir: path.resolve(PROJECT_ROOT, envStr("PIXMITH_STATE_DIR", path.join(PROJECT_ROOT, ".pixmith"))),

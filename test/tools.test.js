@@ -14,7 +14,7 @@ const PNG = Buffer.concat([
   Buffer.alloc(64, 0),
 ]);
 
-async function setup({ pollWaitMs = 60, finishGraceMs = 0, generate } = {}) {
+async function setup({ pollWaitMs = 60, finishGraceMs = 0, generate, usage = null, creditsPolicy = "ask" } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pixmith-tools-"));
   const out = path.join(dir, "out.png");
   await fs.writeFile(out, PNG);
@@ -25,8 +25,13 @@ async function setup({ pollWaitMs = 60, finishGraceMs = 0, generate } = {}) {
       args.signal.addEventListener("abort", () => reject(new PixmithError("cancelled", "stopped")));
     });
   const jobs = new JobManager({ generate: generate ?? defaultGenerate });
-  const config = { pollWaitMs, finishGraceMs, returnImage: true, maxInlineBytes: 1024 * 1024 };
-  const { tools, call } = createTools({ jobs, config });
+  const config = { pollWaitMs, finishGraceMs, returnImage: true, maxInlineBytes: 1024 * 1024, creditsPolicy, usageWarnPercent: 80 };
+  const usageCalls = [];
+  const readUsage = async (opts) => {
+    usageCalls.push(opts);
+    return typeof usage === "function" ? usage() : usage;
+  };
+  const { tools, call } = createTools({ jobs, config, readUsage });
   const result = (extra = {}) => ({
     path: out,
     size: "1024x1024",
@@ -37,7 +42,7 @@ async function setup({ pollWaitMs = 60, finishGraceMs = 0, generate } = {}) {
     inputImages: [],
     ...extra,
   });
-  return { dir, out, jobs, tools, call, calls, result, cleanup: () => fs.rm(dir, { recursive: true, force: true }) };
+  return { dir, out, jobs, tools, call, calls, result, usageCalls, cleanup: () => fs.rm(dir, { recursive: true, force: true }) };
 }
 
 const textOf = (res) => res.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
@@ -211,5 +216,87 @@ test("grace period: a job already finishing when the window closes is returned b
     assert.ok(Date.now() - t1 < 500);
   } finally {
     await t.cleanup();
+  }
+});
+
+const HOUR = 3600_000;
+const snapshot = ({ primary = 16, weekly = 3, credits = 0, reachedType = null } = {}) => ({
+  at: Date.now(),
+  plan: "plus",
+  windows: [
+    { label: "5-hour", minutes: 300, usedPercent: primary, resetsAt: Date.now() + 2 * HOUR },
+    { label: "weekly", minutes: 10080, usedPercent: weekly, resetsAt: Date.now() + 48 * HOUR },
+  ],
+  credits: { unlimited: false, balance: credits, available: credits > 0 },
+  reachedType,
+});
+
+test("usage: every finished result reports plan usage, with a warning near the limit", async () => {
+  const t = await setup({ pollWaitMs: 2000, usage: snapshot({ primary: 86 }) });
+  try {
+    const pending = t.call("generate_image", { prompt: "a fox" });
+    await new Promise((r) => setTimeout(r, 20));
+    t.calls[0].resolve(t.result({ sessionId: "abc" }));
+    const out = textOf(await pending);
+    assert.match(out, /Plan usage: 86% of the 5-hour limit \(resets at \d\d:\d\d\), 3% of the weekly limit \(resets \w{3} at \d\d:\d\d\)\./);
+    assert.match(out, /Usage warning: the 5-hour limit is nearly used up\. After that, jobs stop until the limit resets/);
+    assert.match(out, /Settings > Usage/);
+    assert.deepEqual(t.usageCalls.at(-1), { sessionId: "abc" }, "the job's own session log is preferred");
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test("usage: a missing or failing usage reader never affects a job", async () => {
+  const t = await setup({ pollWaitMs: 2000, usage: () => { throw new Error("unreadable"); } });
+  try {
+    const pending = t.call("generate_image", { prompt: "a fox" });
+    await new Promise((r) => setTimeout(r, 20));
+    t.calls[0].resolve(t.result());
+    const out = textOf(await pending);
+    assert.match(out, /status: done/);
+    assert.doesNotMatch(out, /Plan usage/);
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test("credits: once the plan limit is used up, a job needs the user's consent", async () => {
+  const t = await setup({ pollWaitMs: 30, usage: snapshot({ primary: 100, credits: 250 }) });
+  try {
+    const refused = await t.call("generate_image", { prompt: "a fox" });
+    assert.equal(refused.isError, true);
+    assert.match(textOf(refused), /\[credits_confirmation_needed\] Your ChatGPT plan's 5-hour limit for Codex is used up; it resets at \d\d:\d\d\./);
+    assert.match(textOf(refused), /250 credits available, and Codex would spend them/);
+    assert.match(textOf(refused), /call the tool again with use_credits: true/);
+    assert.equal(t.calls.length, 0, "no job was started");
+    assert.match(textOf(await t.call("edit_image", { image: t.out, prompt: "x" })), /credits_confirmation_needed/);
+    assert.match(textOf(await t.call("generate_image", { prompt: "x", use_credits: "yes" })), /`use_credits` must be true or false/);
+
+    const agreed = await t.call("generate_image", { prompt: "a fox", use_credits: true, wait: false });
+    assert.match(textOf(agreed), /status: running/);
+    assert.equal(t.calls.length, 1);
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test("credits: no balance explains how to add credits; policies always / never", async () => {
+  const none = await setup({ usage: snapshot({ weekly: 100 }) });
+  const always = await setup({ usage: snapshot({ primary: 100, credits: 10 }), creditsPolicy: "always" });
+  const never = await setup({ usage: snapshot({ primary: 100, credits: 10 }), creditsPolicy: "never" });
+  try {
+    const out = textOf(await none.call("generate_image", { prompt: "a fox" }));
+    assert.match(out, /weekly limit for Codex is used up/);
+    assert.match(out, /no credits on the account, so a job would most likely fail/);
+    assert.match(out, /Settings > Usage/);
+
+    assert.match(textOf(await always.call("generate_image", { prompt: "a fox", wait: false })), /status: running/);
+
+    const blocked = await never.call("generate_image", { prompt: "a fox", use_credits: true });
+    assert.match(textOf(blocked), /\[usage_limit\].*PIXMITH_USE_CREDITS=never/s);
+    assert.equal(never.calls.length, 0);
+  } finally {
+    await Promise.all([none.cleanup(), always.cleanup(), never.cleanup()]);
   }
 });
