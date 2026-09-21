@@ -11,12 +11,21 @@
 
 **Generate images from your MCP client (e.g. Claude) using the OpenAI Codex CLI — on your ChatGPT subscription, no image API key required.**
 
-Pixmith is a small local [MCP](https://modelcontextprotocol.io) server that exposes a
-single `generate_image` tool to any MCP client (such as Claude Desktop or Claude Code).
-Under the hood it drives the **OpenAI Codex CLI** and its built-in `$imagegen` skill
+Pixmith is a small local [MCP](https://modelcontextprotocol.io) server that lets any MCP
+client (such as Claude Desktop or Claude Code) **generate and edit images**. Under the
+hood it drives the **OpenAI Codex CLI** and its built-in `$imagegen` skill
 (`gpt-image-2`), then hands the finished PNG back to your client — both as a file path
 and inline. Ask Claude for "a watercolour fox at dawn, 1536×1024" and a real image
-lands on disk seconds later.
+lands on disk about half a minute later; then say "make it snowing" and Pixmith edits
+that same image.
+
+- **One call in the common case.** `generate_image` waits for the image and returns it
+  directly; polling is only the fallback for slow jobs.
+- **Live feedback.** Progress updates carry the real stage reported by Codex and the
+  elapsed time against what generations usually take on your machine.
+- **Editing.** `edit_image` changes an existing image — a previous result or any local
+  file — and both tools accept reference images.
+- **Cancellation.** `cancel_image` stops a job and its Codex session immediately.
 
 **Why Pixmith?** Codex can be signed in with your **ChatGPT account**, so image
 generation runs against your existing ChatGPT plan instead of a separate, metered image
@@ -42,18 +51,23 @@ MCP client ──MCP(stdio)──▶ Pixmith ──spawn──▶ codex exec "$i
                               └──────────── PNG path + inline image ◀───────────┘
 ```
 
-1. The client calls `generate_image` with a prompt (and optional size / output dir).
-   Pixmith validates the request, queues a job, and returns a `job_id` at once.
-2. Pixmith runs `codex exec` with a tightly-scripted prompt that tells Codex to call
-   the built-in `image_gen` tool exactly once and reply `DONE` (or `ERROR: <reason>`).
-   The agent is told not to copy files or run shell commands — Pixmith handles that.
-3. Codex writes the PNG to `$CODEX_HOME/generated_images/<session id>/`. Pixmith reads
-   the session id from Codex's own startup banner, copies that session's PNG into the
+1. The client calls `generate_image` (or `edit_image`) with a prompt. Pixmith validates
+   the request — size, output directory, input images — and queues a job.
+2. Pixmith runs `codex exec --json` with a tightly-scripted prompt that tells Codex to
+   call the built-in `image_gen` tool exactly once and reply `DONE` (or
+   `ERROR: <reason>`). Images to edit or reference are attached to that prompt. The
+   agent is told not to copy files or run shell commands — Pixmith handles that.
+3. Codex streams JSON events while it works. Pixmith turns them into stages (session
+   started, rendering, finishing) and reports them as MCP progress notifications,
+   together with the elapsed time and the typical duration of recent jobs.
+4. Codex writes the PNG to `$CODEX_HOME/generated_images/<session id>/`. Pixmith takes
+   the session id from Codex's event stream, copies that session's PNG into the
    requested output directory, and validates it is a real PNG. If no file was written
    (seen on Windows), it decodes the image from the base64 in Codex's output or the
    session's rollout log instead.
-4. The client calls `get_image_result` and receives the absolute path plus the image
-   inline.
+5. The same tool call returns the absolute path plus the image inline. If the job
+   outlasts the wait window (~45s), the call returns a `job_id` instead and the client
+   collects the image with `get_image_result`.
 
 Because each job is matched to its own Codex session, concurrent jobs can never pick
 up each other's image.
@@ -131,6 +145,7 @@ Generate a test image directly through the engine (bypasses the MCP protocol):
 ```bash
 npm run smoke                       # "a red circle on a white background" @ 1024x1024
 node scripts/smoke-test.js "a tabby cat astronaut" 1536x1024
+node scripts/smoke-test.js "make the helmet gold" auto /abs/path/to/cat.png   # edit
 ```
 
 A successful run prints JSON with the saved `path`. Images land in `./images/` by
@@ -146,36 +161,78 @@ npm test
 
 ## The tools
 
-A generation takes ~50–90s — longer than the per-request timeout many MCP clients
-(e.g. Claude Desktop) enforce, and some clients won't extend that timeout. So
-Pixmith never blocks on the long call. It exposes **two tools** and the assistant
-uses them together automatically:
+A generation is a Codex agent session, so it takes roughly 30–40s (edits about twice
+that) — close to the per-request timeout some MCP clients enforce. Pixmith therefore
+never blocks a single call for longer than the **wait window** (`PIXMITH_POLL_WAIT_MS`,
+default 45s). A typical generation fits inside it, so the usual flow is **one tool
+call that returns the image**. Slower jobs fall back to a `job_id` plus
+`get_image_result`. The assistant drives all of this automatically.
 
-### `generate_image` — starts a job, returns instantly
+### `generate_image` — make an image
 
-| Param        | Type   | Required | Description                                                                                 |
-|--------------|--------|----------|---------------------------------------------------------------------------------------------|
-| `prompt`     | string | ✅       | Text description of the image.                                                              |
-| `size`       | string | ❌       | `auto`, a shortcut `1K`/`2K`/`4K`, or explicit `WIDTHxHEIGHT` (e.g. `1024x1024`, `1536x1024`, `3840x2160`). See [size limits](#size-limits). Default `1024x1024`. |
-| `output_dir` | string | ❌       | Absolute directory to save into. Defaults to Pixmith's `images/` folder.                   |
+| Param              | Type     | Required | Description                                                                                 |
+|--------------------|----------|----------|---------------------------------------------------------------------------------------------|
+| `prompt`           | string   | ✅       | Text description of the image.                                                              |
+| `size`             | string   | ❌       | `auto`, a shortcut `1K`/`2K`/`4K`, or explicit `WIDTHxHEIGHT` (e.g. `1024x1024`, `1536x1024`, `3840x2160`). See [size limits](#size-limits). Default `1024x1024`. |
+| `reference_images` | string[] | ❌       | Up to 4 absolute paths of images (PNG, JPEG, WebP, GIF) to use as style, composition or subject references. |
+| `output_dir`       | string   | ❌       | Absolute directory to save into. Defaults to Pixmith's `images/` folder.                   |
+| `wait`             | boolean  | ❌       | Default `true`: wait up to the wait window and return the image directly. `false` returns the `job_id` at once — handy for starting several jobs back to back. |
 
-Returns immediately with a `job_id` (it does **not** return the image). Invalid sizes
-and relative `output_dir` paths are rejected here, before any Codex session starts.
-If more than `PIXMITH_MAX_CONCURRENT` jobs are in flight the new one is reported as
-`status: queued` with its position.
+Invalid sizes, relative `output_dir` paths and unreadable input images are rejected
+here, before any Codex session starts. If more than `PIXMITH_MAX_CONCURRENT` jobs are in
+flight the new one is reported as `status: queued` with its position.
 
-### `get_image_result` — fetches the finished image
+### `edit_image` — change an existing image
 
-| Param    | Type   | Required | Description                          |
-|----------|--------|----------|--------------------------------------|
-| `job_id` | string | ✅       | The `job_id` from `generate_image`.  |
+| Param              | Type     | Required | Description                                                                 |
+|--------------------|----------|----------|-----------------------------------------------------------------------------|
+| `image`            | string   | ✅       | Absolute path of the image to edit — a previous Pixmith result or any local PNG, JPEG, WebP or GIF (max 20 MB). |
+| `prompt`           | string   | ✅       | What to change. Say what must stay the same, e.g. "make the sky stormy; keep everything else unchanged". |
+| `reference_images` | string[] | ❌       | Extra images to borrow style or content from (up to 4 images in total).     |
+| `size`             | string   | ❌       | As above. Defaults to `auto`, which keeps the source's aspect ratio.         |
+| `output_dir`, `wait` |        | ❌       | As for `generate_image`.                                                    |
 
-Waits up to ~25s, then returns. While the job is waiting for a slot or still
-rendering it returns `status: queued` or `status: running` — the assistant simply
-calls it again with the same `job_id` (usually 2–4 times) until `status: done`, at
-which point it returns the saved absolute path and, when small enough, the PNG inline. **Every call is short, so
-no single request trips a client-side timeout.** You don't manage this yourself —
-just ask for an image and the assistant drives both tools.
+The source file is never modified; the edit is saved as a new PNG. Every finished result
+ends with the exact `edit_image` call that would refine it, so iterating is a one-liner
+for the assistant.
+
+### `get_image_result` — collect a slower job
+
+| Param    | Type   | Required | Description                                                     |
+|----------|--------|----------|-----------------------------------------------------------------|
+| `job_id` | string | ❌       | The job to fetch. Defaults to the most recent job.              |
+
+Waits up to the wait window, then returns. While the job is waiting for a slot or still
+rendering it returns `status: queued` or `status: running` with the current stage,
+elapsed time and an estimate of what is left; the assistant simply calls it again until
+`status: done`. Results stay available for 15 minutes and can be fetched more than once,
+so an image is never lost to a client-side timeout — call `get_image_result` with no
+arguments to recover it.
+
+### `cancel_image` — stop a job
+
+| Param    | Type   | Required | Description                                                     |
+|----------|--------|----------|-----------------------------------------------------------------|
+| `job_id` | string | ❌       | The job to cancel. Defaults to the most recent unfinished job.  |
+
+A queued job is dropped; a running job's Codex session is killed at once, so it stops
+using your ChatGPT quota. Pixmith also stops every running session when the MCP client
+disconnects.
+
+### Progress feedback
+
+While a call waits, Pixmith sends MCP progress notifications every 3 seconds, for
+clients that display them:
+
+```
+Codex session started — 3s of ~32s
+Rendering the image — 18s of ~32s
+Rendering the image — 41s, longer than the usual ~32s
+```
+
+The stage comes from Codex's own event stream. The "usual" figure is the median of your
+last ten jobs (kept separately for generations and edits in `.pixmith/stats.json`), so
+the estimate adapts to your machine, plan and image sizes.
 
 ### Size limits
 
@@ -204,7 +261,8 @@ when it differs.
 | `CODEX_BIN`                | auto-detected, else `codex` on `PATH`                | Path to the Codex binary. Set this if auto-detection misses (e.g. `CODEX_BIN=C:/Users/you/AppData/Local/Programs/codex/codex.exe`). |
 | `PIXMITH_SANDBOX`          | `workspace-write`                                    | Sandbox policy passed to `codex exec` when the OS sandbox is used. |
 | `PIXMITH_BYPASS_SANDBOX`   | `true` on Windows, else `false`                      | Run Codex without its OS sandbox. Codex sandboxing is macOS/Linux only (Seatbelt/Landlock); on Windows it blocks the file-save, so Pixmith bypasses it there. Set `true`/`false` to override. |
-| `PIXMITH_POLL_WAIT_MS`     | `25000` (25s)                                        | Max wait per `get_image_result` call. Lower it if your MCP client's request timeout is under ~30s. |
+| `PIXMITH_POLL_WAIT_MS`     | `45000` (45s)                                        | The wait window: the longest any single tool call waits for a job (2s–55s). Lower it if your MCP client's request timeout is under ~60s. |
+| `PIXMITH_STATE_DIR`        | `<project>/.pixmith`                                 | Where Pixmith keeps its recent job durations (used for time estimates). |
 | `PIXMITH_OUTPUT_DIR`       | `<project>/images`                                   | Default output directory for generated PNGs.                    |
 | `CODEX_HOME`               | `~/.codex`                                            | Codex home (used to locate the backup `generated_images/` copy). |
 | `PIXMITH_TIMEOUT_MS`       | `300000` (5 min)                                     | Hard timeout per generation.                                    |
@@ -260,7 +318,7 @@ if you need to override the detected path, e.g.
 `"env": { "CODEX_BIN": "C:/Users/you/AppData/Local/Programs/codex/codex.exe" }`.
 
 Then **quit and reopen** the app. Pixmith appears as a connector exposing the
-`generate_image` tool.
+`generate_image`, `edit_image`, `get_image_result` and `cancel_image` tools.
 
 ### Claude Code (CLI)
 
@@ -274,6 +332,8 @@ Or add the same `mcpServers` block above to a project-level `.mcp.json`.
 
 > Use Pixmith to generate a 1536x1024 image of a lighthouse at sunset.
 
+> Now make it a stormy night, keep the lighthouse exactly as it is.
+
 ---
 
 ## Troubleshooting
@@ -283,19 +343,19 @@ Or add the same `mcpServers` block above to a project-level `.mcp.json`.
 | `[binary_missing]`                   | Codex CLI not found — install it, or set `CODEX_BIN` to the correct path.    |
 | `[not_signed_in]`                    | Sign in to Codex (ChatGPT account) or configure an API key, then retry.     |
 | `[timeout]`                          | Large image or slow service — raise `PIXMITH_TIMEOUT_MS`.                    |
+| `[usage_limit]`                      | Your ChatGPT plan's image/Codex limit was reached. Retry after it resets.   |
 | `[generation_failed]` / `[no_output]`| Codex ran but produced nothing; see the `Detail:` stderr tail in the error. |
 | Windows: image isn't saved / sandbox error | Codex's OS sandbox is macOS/Linux only and blocks file writes on Windows. Pixmith bypasses it on Windows automatically (`PIXMITH_BYPASS_SANDBOX=true`). If you overrode that, unset it. |
-| Client times out during generation | Shouldn't happen: `generate_image` returns instantly and `get_image_result` waits at most ~25s per call. If your client's request timeout is under ~30s, lower `PIXMITH_POLL_WAIT_MS` to match. The PNG is still saved either way — check `output_dir` (and `$CODEX_HOME/generated_images/`). |
-| `[unknown_job]` from get_image_result | The job_id expired (>15 min) or generation was never started — call `generate_image` first, then poll with the returned job_id. |
-| `[bad_request]` from generate_image  | The `size` breaks a gpt-image-2 limit (see [size limits](#size-limits)) or `output_dir` is not absolute. Fix the argument and retry. |
+| Client times out during generation | No call waits longer than the wait window (45s by default). If your client's request timeout is shorter than ~60s, lower `PIXMITH_POLL_WAIT_MS` to match. The job keeps running either way — call `get_image_result` with no arguments to collect it. |
+| `[unknown_job]`                      | The job_id expired (>15 min) or nothing was started — call `generate_image` first. |
+| `[bad_request]`                      | The `size` breaks a gpt-image-2 limit (see [size limits](#size-limits)), `output_dir` is not absolute, or an input image is missing, too large, or not a PNG/JPEG/WebP/GIF. Fix the argument and retry. |
+| An edit changed more than asked      | Say explicitly what must stay the same ("change only X; keep Y unchanged"), and pass a fixed `size` if the framing moved. |
 | Jobs sit at `status: queued`         | More jobs were started than `PIXMITH_MAX_CONCURRENT` allows. They run in order; raise the limit if your plan can take it. |
 
 > **A note on timing.** A generation is an agent session, not a raw API call, so it
-> takes ~50–90s. To stay under client request timeouts, Pixmith never blocks on the
-> long call: `generate_image` starts a background job and returns a `job_id`
-> immediately, and `get_image_result` retrieves it with a short bounded wait. The
-> assistant polls a few times until it's done — no single request runs long enough
-> to time out, regardless of how the client handles progress notifications.
+> takes ~30–40s (edits longer). Pixmith never blocks a call past the wait window: a
+> typical image comes back from the first call, and anything slower returns a `job_id`
+> that `get_image_result` collects with short, bounded waits.
 
 ---
 
@@ -308,6 +368,10 @@ Or add the same `mcpServers` block above to a project-level `.mcp.json`.
   output directory. **On Windows there is no OS sandbox** (Codex's Seatbelt/Landlock
   sandboxing is Unix-only), so Pixmith runs Codex unsandboxed there by default. The
   agent is instructed not to run shell commands, but that is a prompt, not a policy.
+- Input images for `edit_image` / `reference_images` must be absolute paths to real image
+  files (checked by magic bytes, max 20 MB). They are attached to the Codex prompt, so
+  they are uploaded to OpenAI as part of the request; the files themselves are never
+  modified.
 - `output_dir` must be an absolute path; relative paths are rejected so the MCP
   client's working directory never decides where files land.
 

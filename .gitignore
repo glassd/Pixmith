@@ -28,3 +28,6 @@ desktop.ini
 # Never commit anything resembling secrets / Codex auth
 **/auth.json
 *.pem
+
+# Pixmith local state (job duration history)
+.pixmith/

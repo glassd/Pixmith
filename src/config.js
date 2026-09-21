@@ -128,9 +128,15 @@ export const config = {
   // requests queue and are reported as status "queued".
   maxConcurrent: envInt("PIXMITH_MAX_CONCURRENT", 1),
 
-  // Long-poll window per get_image_result call. Must stay under the client's
-  // per-request timeout (Claude Desktop ~60s); 25s leaves comfortable margin.
-  pollWaitMs: Math.min(55_000, Math.max(2_000, envInt("PIXMITH_POLL_WAIT_MS", 25_000))),
+  // How long any single tool call may wait for a job before answering
+  // "still running". A typical generation (~30-40s) fits inside the default, so
+  // most images come back from the very first call. Must stay under the
+  // client's per-request timeout (commonly 60s) — lower it for stricter clients.
+  pollWaitMs: Math.min(55_000, Math.max(2_000, envInt("PIXMITH_POLL_WAIT_MS", 45_000))),
+
+  // Where Pixmith keeps its own small state (recent job durations, used to
+  // estimate how long a generation will take). Git-ignored.
+  stateDir: path.resolve(PROJECT_ROOT, envStr("PIXMITH_STATE_DIR", path.join(PROJECT_ROOT, ".pixmith"))),
 
   // Whether to inline the PNG as MCP image content (base64), and the size cap.
   returnImage: envBool("PIXMITH_RETURN_IMAGE", true),
