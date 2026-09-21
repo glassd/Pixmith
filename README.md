@@ -251,7 +251,9 @@ until the reset unless you add credits (ChatGPT → Settings → Usage, or Usage
 the Codex app).
 
 Once a limit is fully used, Codex would draw on purchased credits automatically. Pixmith
-does not let that happen silently. `generate_image` and `edit_image` refuse to start
+does not let that happen silently. (If the account has credits, the question comes
+slightly early, at 98%: a generation uses 1–2% of the 5-hour window, so a job started
+above that could cross the limit mid-run.) `generate_image` and `edit_image` refuse to start
 with `[credits_confirmation_needed]` and tell the assistant to ask you. If you agree,
 the assistant repeats the call with `use_credits: true`. Set `PIXMITH_USE_CREDITS` to
 `always` to skip the question or `never` to refuse outright. Pixmith never buys credits.

@@ -331,7 +331,10 @@ export function createTools({ jobs, config, readUsage = readCodexUsage }) {
     ];
     if (job.mode === "edit" && result.inputImages?.length) lines.push(`Edited from: ${result.inputImages[0]}`);
     if (result.codexHomeCopy && result.codexHomeCopy !== result.path) lines.push(`Codex copy: ${result.codexHomeCopy}`);
-    lines.push(...usageLines(await safeUsage({ sessionId: result.sessionId }), { warnPercent: config.usageWarnPercent }));
+    // Read once per job: the figure describes the moment the job finished, and a
+    // result can be fetched several times.
+    job.usageLines ??= usageLines(await safeUsage({ sessionId: result.sessionId }), { warnPercent: config.usageWarnPercent });
+    lines.push(...job.usageLines);
     if (config.codexBinNote) lines.push(`Note: ${config.codexBinNote}`);
     lines.push(`job_id: ${job.id}`, "", `To change this image, call edit_image with image="${result.path}" and describe the change.`);
 

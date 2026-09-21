@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { creditGate, formatReset, limitReached, liveWindows, parseRateLimits, usageLines, windowLabel } from "../src/usage.js";
+import { creditGate, formatReset, limitReached, liveWindows, parseRateLimits, SPILL_PERCENT, usageLines, windowLabel } from "../src/usage.js";
 
 const NOW = Date.parse("2026-09-21T21:30:00Z");
 const line = (rate_limits, timestamp = "2026-09-21T21:29:54.913Z") =>
@@ -88,4 +88,26 @@ test("creditGate: proceed, confirm, block", () => {
   assert.equal(none.action, "confirm");
   assert.match(none.message, /no credits on the account, so a job would most likely fail/);
   assert.equal(creditGate(broke, { now: NOW, useCredits: true }).action, "proceed");
+});
+
+test("limitReached: Codex's reached flag is not trusted once a window in the snapshot has reset", () => {
+  const stale = parseRateLimits(
+    line(limits({ rate_limit_reached_type: "primary", primary: { used_percent: 100, window_minutes: 300, resets_at: NOW / 1000 - 60 } })),
+  );
+  assert.equal(limitReached(stale, NOW), false, "the 5-hour window reset, so the flag may describe a limit that is gone");
+  assert.equal(creditGate(stale, { now: NOW }).action, "proceed");
+});
+
+test("creditGate: asks early when a job could spill over into credits, but only if there are credits to spend", () => {
+  const nearly = limits({ primary: { used_percent: SPILL_PERCENT, window_minutes: 300, resets_at: NOW / 1000 + 7200 } });
+  const funded = parseRateLimits(line({ ...nearly, credits: { has_credits: true, unlimited: false, balance: "250" } }));
+  const gate = creditGate(funded, { now: NOW });
+  assert.equal(gate.action, "confirm");
+  assert.match(gate.message, /5-hour limit for Codex is 98% used, so this job could spill over into paid credits/);
+  assert.equal(creditGate(funded, { now: NOW, useCredits: true }).action, "proceed");
+
+  // Without credits nothing can be spent by accident: the job simply runs on what is left.
+  assert.equal(creditGate(parseRateLimits(line(nearly)), { now: NOW }).action, "proceed");
+  const below = limits({ primary: { used_percent: SPILL_PERCENT - 1, window_minutes: 300, resets_at: NOW / 1000 + 7200 } });
+  assert.equal(creditGate(parseRateLimits(line({ ...below, credits: { has_credits: true, unlimited: false, balance: "250" } })), { now: NOW }).action, "proceed");
 });

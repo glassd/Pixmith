@@ -92,8 +92,14 @@ export async function readUsage({ sessionId = null, maxFiles = 5 } = {}) {
     const mine = sessionId ? logs.filter((l) => path.basename(l.file).toLowerCase().includes(sessionId)) : [];
     const ordered = [...mine, ...logs.filter((l) => !mine.includes(l))].slice(0, maxFiles);
 
+    // Read the job's own log(s) plus the newest other log, and keep whichever
+    // snapshot is more recent — another Codex session may have run since.
     let best = null;
-    for (const { file } of ordered) {
+    let othersRead = 0;
+    for (const entry of ordered) {
+      const { file } = entry;
+      const isMine = mine.includes(entry);
+      if (!isMine && best && othersRead >= 1) break;
       let usage = null;
       try {
         const tail = await readTail(file);
@@ -103,7 +109,7 @@ export async function readUsage({ sessionId = null, maxFiles = 5 } = {}) {
         continue;
       }
       if (usage && (!best || (usage.at ?? 0) > (best.at ?? 0))) best = usage;
-      if (best && mine.length === 0) break; // newest file with data wins
+      if (!isMine && usage) othersRead += 1;
     }
     return best;
   } catch {
@@ -132,11 +138,26 @@ function creditsText(credits) {
 
 const BUY_HINT = "Credits can be added in ChatGPT under Settings > Usage, or in the Codex app under Usage & Billing.";
 
-/** True when a live window is exhausted, i.e. the next job would not run on plan usage. */
+/**
+ * One generation uses roughly 1-2% of the 5-hour window, so a job started
+ * above this level can cross the limit mid-run and spill into paid credits.
+ */
+export const SPILL_PERCENT = 98;
+
+/**
+ * True when the next job would not run (entirely) on plan usage: a live window
+ * is exhausted, or — when there are credits that could be spent without the
+ * user noticing — is within a job's worth of being exhausted.
+ */
 export function limitReached(usage, now = Date.now()) {
   const live = liveWindows(usage, now);
   if (!live.length) return false;
-  return live.some((w) => w.usedPercent >= 100) || Boolean(usage.reachedType);
+  const threshold = usage.credits.available ? SPILL_PERCENT : 100;
+  if (live.some((w) => w.usedPercent >= threshold)) return true;
+  // Codex's own "limit reached" flag names no window, so it is only trusted
+  // while every window in the snapshot is still live; after a reset it may be
+  // describing a limit that no longer applies.
+  return Boolean(usage.reachedType) && live.length === usage.windows.length;
 }
 
 /**
@@ -173,8 +194,10 @@ export function creditGate(usage, { policy = "ask", useCredits = false, now = Da
   if (!limitReached(usage, now)) return { action: "proceed", message: "" };
 
   const live = liveWindows(usage, now);
-  const spent = live.filter((w) => w.usedPercent >= 100).sort((a, b) => (b.resetsAt ?? 0) - (a.resetsAt ?? 0))[0] ?? live[0];
-  const head = `Your ChatGPT plan's ${spent.label} limit for Codex is used up; it resets ${formatReset(spent.resetsAt, now)}.`;
+  const byUse = [...live].sort((a, b) => b.usedPercent - a.usedPercent || (b.resetsAt ?? 0) - (a.resetsAt ?? 0));
+  const spent = byUse[0];
+  const state = spent.usedPercent >= 100 || usage.reachedType ? "is used up" : `is ${Math.round(spent.usedPercent)}% used, so this job could spill over into paid credits`;
+  const head = `Your ChatGPT plan's ${spent.label} limit for Codex ${state}; it resets ${formatReset(spent.resetsAt, now)}.`;
 
   if (policy === "never") {
     return {
@@ -185,7 +208,7 @@ export function creditGate(usage, { policy = "ask", useCredits = false, now = Da
   if (policy === "always" || useCredits) return { action: "proceed", message: "" };
 
   const message = usage.credits.available
-    ? `${head} The account has ${creditsText(usage.credits)}, and Codex would spend them on this job. No job was started. ` +
+    ? `${head} The account has ${creditsText(usage.credits)}, and Codex would spend them automatically. No job was started. ` +
       "Ask the user whether to continue on paid credits; if they agree, call the tool again with use_credits: true."
     : `${head} The account shows ${creditsText(usage.credits)}, so a job would most likely fail. No job was started. ${BUY_HINT} ` +
       "If the user has just added credits and wants to continue on them, call the tool again with use_credits: true.";

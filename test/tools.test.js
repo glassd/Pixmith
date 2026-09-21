@@ -242,6 +242,9 @@ test("usage: every finished result reports plan usage, with a warning near the l
     assert.match(out, /Usage warning: the 5-hour limit is nearly used up\. After that, jobs stop until the limit resets/);
     assert.match(out, /Settings > Usage/);
     assert.deepEqual(t.usageCalls.at(-1), { sessionId: "abc" }, "the job's own session log is preferred");
+    const reads = t.usageCalls.length;
+    assert.match(textOf(await t.call("get_image_result", {})), /Plan usage: 86%/);
+    assert.equal(t.usageCalls.length, reads, "a re-fetched result reuses the figure from when the job finished");
   } finally {
     await t.cleanup();
   }
