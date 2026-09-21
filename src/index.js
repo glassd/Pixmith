@@ -5,7 +5,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
-import { config } from "./config.js";
+import { config, configWarnings } from "./config.js";
 import { generateImage, killAllCodex } from "./codex.js";
 import { DurationStats, JobManager } from "./jobs.js";
 import { createTools } from "./tools.js";
@@ -52,6 +52,7 @@ async function main() {
       `max concurrent: ${config.maxConcurrent}, wait window: ${Math.round(config.pollWaitMs / 1000)}s)\n`,
   );
   if (config.codexBinNote) process.stderr.write(`Pixmith: ${config.codexBinNote}\n`);
+  for (const warning of configWarnings) process.stderr.write(`Pixmith: ${warning}\n`);
 }
 
 main().catch((err) => {

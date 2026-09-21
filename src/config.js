@@ -24,10 +24,19 @@ function envStr(name, fallback) {
   return raw == null || raw.trim() === "" ? fallback : raw.trim();
 }
 
-/** A string setting that is passed to the Codex command line: ignored unless it matches `pattern`. */
+/** Settings that were present but unusable; index.js reports them at startup. */
+export const configWarnings = [];
+
+/**
+ * A string setting that is passed to the Codex command line. It is ignored —
+ * with a startup warning — unless it matches `pattern`.
+ */
 function envPattern(name, pattern) {
   const v = envStr(name, null);
-  return v && pattern.test(v) ? v : null;
+  if (!v) return null;
+  if (pattern.test(v)) return v;
+  configWarnings.push(`${name}="${v}" is not a valid value and was ignored; Codex's own default is used instead.`);
+  return null;
 }
 
 function envBool(name, fallback) {

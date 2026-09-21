@@ -593,14 +593,14 @@ export async function generateImage({ prompt, size, outputDir, images, mode = "g
   // followed by another option — never by the bare "-" prompt sentinel.
   const imageArgs = inputImages.flatMap((p) => ["-i", p]);
 
-  // `--json` turns stdout into JSONL events: the session id arrives as a
-  // structured field and each event marks a stage we can report as progress.
   // Optional overrides for the agent that wraps the image_gen call. The wrapper
   // only copies the prompt into one tool call, so a faster model is enough.
   const modelArgs = [];
   if (config.codexModel) modelArgs.push("-m", config.codexModel);
   if (config.codexEffort) modelArgs.push("-c", `model_reasoning_effort="${config.codexEffort}"`);
 
+  // `--json` turns stdout into JSONL events: the session id arrives as a
+  // structured field and each event marks a stage we can report as progress.
   const codexArgs = [
     "exec",
     "--json",
@@ -635,16 +635,22 @@ export async function generateImage({ prompt, size, outputDir, images, mode = "g
     return false;
   };
   const runOpts = { onProgress, signal, onEvent: (ev) => setStage(ev.stage), until: imageReady };
-  let run = await runCodex(codexArgs, fullPrompt, runOpts);
-  // A Codex build without `--json` rejects the flag straight away. Run again
-  // without it: stage updates are lost, but the banner/snapshot lookups below
-  // still find the image.
-  if (rejectedJsonFlag(run)) {
-    run = await runCodex(codexArgs.filter((a) => a !== "--json"), fullPrompt, runOpts);
+  let run;
+  try {
+    run = await runCodex(codexArgs, fullPrompt, runOpts);
+    // A Codex build without `--json` rejects the flag straight away. Run again
+    // without it: stage updates are lost, but the banner/snapshot lookups below
+    // still find the image.
+    if (rejectedJsonFlag(run)) {
+      run = await runCodex(codexArgs.filter((a) => a !== "--json"), fullPrompt, runOpts);
+    }
+  } catch (err) {
+    fs.unlink(lastMsgPath).catch(() => {}); // Codex never started, so nothing will read it
+    throw err;
+  } finally {
+    if (promptFile) fs.unlink(promptFile).catch(() => {});
   }
   const { stdout, stderr, code, timedOut, aborted, agentText, eventErrors } = run;
-
-  if (promptFile) fs.unlink(promptFile).catch(() => {});
 
   if (aborted) {
     fs.unlink(lastMsgPath).catch(() => {});
