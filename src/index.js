@@ -51,6 +51,7 @@ async function main() {
     `Pixmith ${config.version} MCP server running (codex: ${config.codexBin}, output: ${config.defaultOutputDir}, ` +
       `max concurrent: ${config.maxConcurrent}, wait window: ${Math.round(config.pollWaitMs / 1000)}s)\n`,
   );
+  if (config.codexBinNote) process.stderr.write(`Pixmith: ${config.codexBinNote}\n`);
 }
 
 main().catch((err) => {

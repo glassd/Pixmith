@@ -111,9 +111,14 @@ misses, set `CODEX_BIN` to the absolute path. To locate it:
 
 | OS      | Find it with             | Typical location                                                        |
 |---------|--------------------------|-------------------------------------------------------------------------|
-| macOS   | `which codex`            | `/Applications/Codex.app/Contents/Resources/codex` (desktop app bundle) |
+| macOS   | `which codex`            | `/Applications/Codex.app/Contents/Resources/codex` (desktop app bundle), or `~/.local/bin/codex` (standalone installer) |
 | Windows | `where codex` (cmd)      | `%LOCALAPPDATA%\Programs\codex\codex.exe`, or `%APPDATA%\npm\codex.cmd`  |
 | Linux   | `which codex`            | `/usr/local/bin/codex`, `~/.local/bin/codex`                            |
+
+If `CODEX_BIN` points at a file that no longer exists — for example Codex was
+reinstalled somewhere else after you configured your MCP client — Pixmith falls back to
+auto-detection instead of failing, and adds a `Note:` to each result so you can clean up
+the stale setting.
 
 > **Windows note:** both a native `codex.exe` and an npm-installed `codex.cmd`
 > shim work — Pixmith handles each. If you point `CODEX_BIN` at a `.cmd`/`.bat`,
@@ -340,7 +345,7 @@ Or add the same `mcpServers` block above to a project-level `.mcp.json`.
 
 | Symptom                              | Cause / fix                                                                 |
 |--------------------------------------|------------------------------------------------------------------------------|
-| `[binary_missing]`                   | Codex CLI not found — install it, or set `CODEX_BIN` to the correct path.    |
+| `[binary_missing]`                   | Codex CLI not found in `CODEX_BIN` or any of the usual locations — install it, or set `CODEX_BIN` to the correct path. Apps launched from the Dock don't see your shell's `PATH`, so use an absolute path. |
 | `[not_signed_in]`                    | Sign in to Codex (ChatGPT account) or configure an API key, then retry.     |
 | `[timeout]`                          | Large image or slow service — raise `PIXMITH_TIMEOUT_MS`.                    |
 | `[usage_limit]`                      | Your ChatGPT plan's image/Codex limit was reached. Retry after it resets.   |

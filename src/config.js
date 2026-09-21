@@ -68,6 +68,11 @@ function codexCandidates() {
       path.join(HOME, "Applications/Codex.app/Contents/Resources/codex"),
       "/opt/homebrew/bin/codex",
       "/usr/local/bin/codex",
+      // The standalone installer's location. It must be listed explicitly: apps
+      // launched from the Dock (e.g. Claude Desktop) do not inherit the shell's
+      // PATH, so a bare `codex` would not resolve there.
+      path.join(HOME, ".local/bin/codex"),
+      path.join(HOME, "bin/codex"),
     ];
   }
   // linux and others
@@ -79,25 +84,47 @@ function codexCandidates() {
   ];
 }
 
-/** Resolve the Codex binary: explicit env override, else first existing candidate, else PATH. */
-function resolveCodexBin() {
-  const override = envStr("CODEX_BIN", null);
-  if (override) return override;
-  for (const candidate of codexCandidates()) {
+const looksLikePath = (p) => path.isAbsolute(p) || p.includes("/") || p.includes("\\");
+
+/**
+ * Resolve the Codex binary: explicit override, else first existing candidate,
+ * else the bare command on PATH. Returns { bin, note }.
+ *
+ * A CODEX_BIN that points at a file which no longer exists (Codex was moved or
+ * reinstalled after the MCP client was configured) does not fail every job:
+ * when auto-detection finds a working binary it is used instead, and `note`
+ * says so, so the stale setting can be cleaned up.
+ */
+export function resolveCodexBin(override, candidates, exists = fssync.existsSync) {
+  const found = candidates.find((c) => {
     try {
-      if (path.isAbsolute(candidate) && fssync.existsSync(candidate)) return candidate;
+      return path.isAbsolute(c) && exists(c);
     } catch {
-      /* ignore and keep trying */
+      return false;
     }
+  });
+  if (override) {
+    if (!looksLikePath(override) || exists(override)) return { bin: override, note: null };
+    if (found) {
+      return {
+        bin: found,
+        note: `CODEX_BIN is set to "${override}", which does not exist. Pixmith used the auto-detected "${found}" instead — update or remove CODEX_BIN in your MCP client's config.`,
+      };
+    }
+    return { bin: override, note: null }; // nothing better; the error will name this path
   }
-  return "codex"; // rely on PATH
+  return { bin: found ?? "codex", note: null }; // bare name: rely on PATH
 }
+
+const codex = resolveCodexBin(envStr("CODEX_BIN", null), codexCandidates());
 
 export const config = {
   version: readPackageVersion(),
 
   // Path to the Codex binary, or a bare command resolved on PATH.
-  codexBin: resolveCodexBin(),
+  codexBin: codex.bin,
+  // Set when a stale CODEX_BIN override was replaced by auto-detection.
+  codexBinNote: codex.note,
   // Every candidate we considered — used to build a helpful "not found" error.
   codexCandidates: codexCandidates(),
 
