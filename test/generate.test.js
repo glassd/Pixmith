@@ -151,3 +151,22 @@ test("readUsage: newest session log wins, the job's own log is preferred, big lo
   await fs.rm(path.join(codexHome, "sessions"), { recursive: true, force: true });
   assert.equal(await readUsage(), null);
 });
+
+test("generateImage: an early-stopped edit still reports its session id and input images", { skip }, async () => {
+  // The usage line is looked up by session id, and edits are stopped early like
+  // generations, so the id must survive that path.
+  process.env.FAKE_MODE = "ok";
+  await reset();
+  const seed = await generateImage({ prompt: "seed" });
+  const src = path.join(root, "edit-src.png");
+  await fs.copyFile(seed.path, src);
+  await reset();
+
+  process.env.FAKE_MODE = "early";
+  const res = await generateImage({ prompt: "make it snowing", mode: "edit", images: [src] });
+  assert.equal(res.mode, "edit");
+  assert.equal(res.stoppedEarly, true);
+  assert.equal(res.sessionId, "0a0b0c0d-1111-2222-3333-444455556666");
+  assert.deepEqual(res.inputImages, [src]);
+  assert.equal(res.requestedSize, "auto");
+});

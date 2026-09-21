@@ -303,3 +303,38 @@ test("credits: no balance explains how to add credits; policies always / never",
     await Promise.all([none.cleanup(), always.cleanup(), never.cleanup()]);
   }
 });
+
+test("usage: an edit result reports plan usage too, keyed to the edit's own session", async () => {
+  const t = await setup({ pollWaitMs: 2000, usage: snapshot({ primary: 91, credits: 40 }) });
+  try {
+    const pending = t.call("edit_image", { image: t.out, prompt: "make it snowing" });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(t.calls[0].args.mode, "edit");
+    t.calls[0].resolve(t.result({ sessionId: "edit-session", inputImages: [t.out], requestedSize: "auto" }));
+    const out = textOf(await pending);
+    assert.match(out, /Image edited in \d+s/);
+    assert.match(out, /Edited from: /);
+    assert.match(out, /Plan usage: 91% of the 5-hour limit/);
+    assert.match(out, /Usage warning: the 5-hour limit is nearly used up\. After that, jobs run on paid credits \(40 credits available\)/);
+    assert.deepEqual(t.usageCalls.at(-1), { sessionId: "edit-session" });
+    // The usage lines sit before the closing edit hint, so the hint stays the last thing the assistant reads.
+    assert.ok(out.indexOf("Plan usage:") < out.indexOf("To change this image"));
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test("usage: an edit that finishes after the wait window still carries usage when collected", async () => {
+  const t = await setup({ pollWaitMs: 30, usage: snapshot({ primary: 55 }) });
+  try {
+    const first = await t.call("edit_image", { image: t.out, prompt: "make it snowing" });
+    assert.match(textOf(first), /status: running/);
+    assert.doesNotMatch(textOf(first), /Plan usage/, "usage is reported with the result, not while running");
+    t.calls[0].resolve(t.result({ sessionId: "slow-edit", inputImages: [t.out] }));
+    const done = textOf(await t.call("get_image_result", {}));
+    assert.match(done, /Image edited in/);
+    assert.match(done, /Plan usage: 55% of the 5-hour limit/);
+  } finally {
+    await t.cleanup();
+  }
+});
