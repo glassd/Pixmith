@@ -210,8 +210,7 @@ test("grace period: a job already finishing when the window closes is returned b
   try {
     // Finishing stage: the call outlasts the window and returns the image.
     const pending = t.call("generate_image", { prompt: "a fox" });
-    await new Promise((r) => setTimeout(r, 10));
-    t.calls[0].args.onStage("finishing");
+    (await startedCall(t)).args.onStage("finishing");
     setTimeout(() => t.calls[0].resolve(t.result()), 90);
     const t0 = Date.now();
     const res = await pending;
