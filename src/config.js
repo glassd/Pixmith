@@ -227,6 +227,11 @@ export const config = {
   // text: 680 KB of image is ~930 KB on the wire. A PNG over the budget is sent
   // as a JPEG preview; the full PNG always stays on disk.
   returnImage: envBool("PIXMITH_RETURN_IMAGE", true),
+
+  // Declare an outputSchema on every tool and return structuredContent (status,
+  // path, job_id, usage...) next to the text. Turn off for a client that
+  // mishandles structured tool results.
+  structuredOutput: envBool("PIXMITH_STRUCTURED_OUTPUT", true),
   maxInlineBytes: envInt("PIXMITH_MAX_INLINE_BYTES", 680 * 1024),
 };
 
