@@ -46,6 +46,18 @@ async function setup({ pollWaitMs = 60, finishGraceMs = 0, generate, usage = nul
   return { dir, out, jobs, tools, call, calls, result, usageCalls, cleanup: () => fs.rm(dir, { recursive: true, force: true }) };
 }
 
+/**
+ * The i-th call to the fake generate(), once it has started: a job starts only
+ * after the tool has checked its arguments, so wait for it rather than sleep.
+ */
+async function startedCall(t, i = 0) {
+  for (let waited = 0; t.calls.length <= i; waited += 5) {
+    if (waited >= 5000) throw new Error(`generate() call ${i + 1} never started`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  return t.calls[i];
+}
+
 const textOf = (res) => res.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
 const jobIdOf = (res) => textOf(res).match(/job_id: (\S+)/)?.[1];
 
@@ -64,8 +76,7 @@ test("generate_image: a fast job returns the image from the first call", async (
   const t = await setup({ pollWaitMs: 2000 });
   try {
     const pending = t.call("generate_image", { prompt: "a fox" });
-    await new Promise((r) => setTimeout(r, 20));
-    t.calls[0].resolve(t.result());
+    (await startedCall(t)).resolve(t.result());
     const res = await pending;
     assert.equal(res.isError, undefined);
     assert.match(textOf(res), /status: done/);
@@ -137,8 +148,7 @@ test("edit_image: validates the source, runs in edit mode with image first, defa
     const ref = path.join(t.dir, "ref.png");
     await fs.writeFile(ref, PNG);
     const pending = t.call("edit_image", { image: t.out, prompt: "make it night", reference_images: [ref] });
-    await new Promise((r) => setTimeout(r, 20));
-    const { args } = t.calls[0];
+    const { args } = await startedCall(t);
     assert.equal(args.mode, "edit");
     assert.equal(args.size, "auto");
     assert.deepEqual(args.images, [t.out, ref]);
@@ -236,8 +246,7 @@ test("usage: every finished result reports plan usage, with a warning near the l
   const t = await setup({ pollWaitMs: 2000, usage: snapshot({ primary: 86 }) });
   try {
     const pending = t.call("generate_image", { prompt: "a fox" });
-    await new Promise((r) => setTimeout(r, 20));
-    t.calls[0].resolve(t.result({ sessionId: "abc" }));
+    (await startedCall(t)).resolve(t.result({ sessionId: "abc" }));
     const out = textOf(await pending);
     assert.match(out, /Plan usage: 86% of the 5-hour limit \(resets (?:\w{3} )?at \d\d:\d\d\), 3% of the weekly limit \(resets \w{3} at \d\d:\d\d\)\./);
     assert.match(out, /Usage warning: the 5-hour limit is nearly used up\. After that, jobs stop until the limit resets/);
@@ -255,8 +264,7 @@ test("usage: a missing or failing usage reader never affects a job", async () =>
   const t = await setup({ pollWaitMs: 2000, usage: () => { throw new Error("unreadable"); } });
   try {
     const pending = t.call("generate_image", { prompt: "a fox" });
-    await new Promise((r) => setTimeout(r, 20));
-    t.calls[0].resolve(t.result());
+    (await startedCall(t)).resolve(t.result());
     const out = textOf(await pending);
     assert.match(out, /status: done/);
     assert.doesNotMatch(out, /Plan usage/);
@@ -309,8 +317,7 @@ test("usage: an edit result reports plan usage too, keyed to the edit's own sess
   const t = await setup({ pollWaitMs: 2000, usage: snapshot({ primary: 91, credits: 40 }) });
   try {
     const pending = t.call("edit_image", { image: t.out, prompt: "make it snowing" });
-    await new Promise((r) => setTimeout(r, 20));
-    assert.equal(t.calls[0].args.mode, "edit");
+    assert.equal((await startedCall(t)).args.mode, "edit");
     t.calls[0].resolve(t.result({ sessionId: "edit-session", inputImages: [t.out], requestedSize: "auto" }));
     const out = textOf(await pending);
     assert.match(out, /Image edited in \d+s/);
@@ -349,8 +356,7 @@ test("inline image: a large PNG is returned as a preview and the whole result st
     assert.ok(data.length > 3 * 1024 * 1024);
 
     const pending = t.call("generate_image", { prompt: "a fox" });
-    await new Promise((r) => setTimeout(r, 20));
-    t.calls[0].resolve(t.result({ path: big, bytes: data.length, size: "1536x1024" }));
+    (await startedCall(t)).resolve(t.result({ path: big, bytes: data.length, size: "1536x1024" }));
     const res = await pending;
 
     assert.ok(JSON.stringify(res).length < 1_000_000, `result is ${JSON.stringify(res).length} bytes`);
@@ -373,8 +379,7 @@ test("inline image: a file that cannot be previewed degrades to a note, never an
   const t = await setup({ pollWaitMs: 5000, maxInlineBytes: 10 });
   try {
     const pending = t.call("generate_image", { prompt: "a fox" });
-    await new Promise((r) => setTimeout(r, 20));
-    t.calls[0].resolve(t.result()); // the fixture is PNG-shaped but not decodable, and over this tiny budget
+    (await startedCall(t)).resolve(t.result()); // the fixture is PNG-shaped but not decodable, and over this tiny budget
     const res = await pending;
     assert.equal(res.isError, undefined);
     assert.match(textOf(res), /status: done/);
