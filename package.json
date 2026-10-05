@@ -1,17 +1,38 @@
 {
   "name": "pixmith",
   "version": "0.5.1",
-  "private": true,
   "description": "Local MCP server that generates and edits images by driving the OpenAI Codex CLI on your ChatGPT subscription (no API key).",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "image-generation",
+    "gpt-image",
+    "codex",
+    "chatgpt",
+    "claude"
+  ],
+  "author": "glassd (https://github.com/glassd)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/glassd/Pixmith.git"
+  },
+  "homepage": "https://github.com/glassd/Pixmith#readme",
+  "bugs": "https://github.com/glassd/Pixmith/issues",
   "type": "module",
   "bin": {
     "pixmith": "src/index.js"
   },
   "main": "src/index.js",
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "start": "node src/index.js",
     "smoke": "node scripts/smoke-test.js",
-    "test": "node scripts/run-tests.js"
+    "test": "node scripts/run-tests.js",
+    "bundle": "npx --yes @anthropic-ai/mcpb@2.1.2 pack . dist/pixmith.mcpb"
   },
   "engines": {
     "node": ">=18"

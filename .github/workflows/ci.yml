@@ -33,3 +33,24 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+
+  bundle:
+    name: Claude Desktop bundle and npm package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # Production dependencies only: the bundle ships node_modules as it is.
+      - run: npm ci --omit=dev
+      - run: npx --yes @anthropic-ai/mcpb@2.1.2 validate manifest.json
+      - run: npm run bundle
+      - run: node scripts/check-bundle.js dist/pixmith.mcpb
+      - run: npm pack --dry-run
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pixmith-mcpb
+          path: dist/pixmith.mcpb
+          retention-days: 14

@@ -1,0 +1,79 @@
+{
+  "manifest_version": "0.3",
+  "name": "pixmith",
+  "display_name": "Pixmith",
+  "version": "0.5.1",
+  "description": "Generate and edit images with gpt-image-2 through the OpenAI Codex CLI, on your ChatGPT subscription. No API key.",
+  "long_description": "Pixmith lets Claude make and edit images by driving the OpenAI Codex CLI, which renders them with gpt-image-2 on your signed-in ChatGPT plan. Images are saved as PNGs and shown inline. It needs the Codex CLI or the Codex desktop app, signed in with your ChatGPT account. Each image counts toward your plan's Codex usage; Pixmith reports what is left and asks before anything would run on paid credits.",
+  "author": {
+    "name": "glassd",
+    "url": "https://github.com/glassd"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/glassd/Pixmith"
+  },
+  "homepage": "https://github.com/glassd/Pixmith",
+  "documentation": "https://github.com/glassd/Pixmith#readme",
+  "support": "https://github.com/glassd/Pixmith/issues",
+  "icon": "assets/icon.png",
+  "license": "MIT",
+  "keywords": ["image", "image-generation", "gpt-image", "codex", "chatgpt", "openai"],
+  "server": {
+    "type": "node",
+    "entry_point": "src/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/src/index.js"],
+      "env": {
+        "CODEX_BIN": "${user_config.codex_bin}",
+        "PIXMITH_OUTPUT_DIR": "${user_config.output_dir}",
+        "PIXMITH_ALLOWED_DIRS": "${user_config.allowed_dir}",
+        "PIXMITH_MAX_CONCURRENT": "${user_config.max_concurrent}"
+      }
+    }
+  },
+  "tools": [
+    { "name": "generate_image", "description": "Generate an image from a text prompt, optionally with reference images, a transparent background or several variants." },
+    { "name": "edit_image", "description": "Edit an existing image with a text instruction; the source is never modified." },
+    { "name": "get_image_result", "description": "Collect a generation that took longer than one call, or an earlier image by its job_id." },
+    { "name": "cancel_image", "description": "Stop a queued or running generation so it stops using plan quota." },
+    { "name": "list_images", "description": "List earlier images, newest first, with their prompts and paths." },
+    { "name": "pixmith_status", "description": "Check Codex, the sign-in, plan usage and the image folder, without making an image." }
+  ],
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  },
+  "user_config": {
+    "codex_bin": {
+      "type": "file",
+      "title": "Codex binary",
+      "description": "Leave empty to find Codex automatically (the Codex app, Homebrew, npm and the standalone installer are all checked).",
+      "required": false
+    },
+    "output_dir": {
+      "type": "directory",
+      "title": "Image folder",
+      "description": "Where images are saved unless Claude picks another folder. Leave empty for Pictures/Pixmith.",
+      "required": false
+    },
+    "allowed_dir": {
+      "type": "directory",
+      "title": "Other folder images may be saved in",
+      "description": "When set, Claude may save images only into this folder or the image folder. Leave empty to allow any folder.",
+      "required": false
+    },
+    "max_concurrent": {
+      "type": "number",
+      "title": "Images at once",
+      "description": "How many images may render at the same time. Each one uses your ChatGPT plan's Codex usage.",
+      "default": 1,
+      "min": 1,
+      "max": 4,
+      "required": false
+    }
+  }
+}

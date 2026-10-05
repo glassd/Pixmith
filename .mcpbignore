@@ -1,0 +1,16 @@
+# Only what the server needs at run time goes into pixmith.mcpb. Patterns
+# start with "/" so they match the project root only: a bare "dist/" would
+# also strip node_modules/@modelcontextprotocol/sdk/dist/.
+/.github/
+/test/
+/fixtures/
+/scripts/
+/dist/
+/images/
+/output/
+/.pixmith/
+/assets/hero.png
+/.env
+/.env.*
+*.mcpb
+*.tgz

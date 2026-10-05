@@ -12,16 +12,27 @@ import { fileURLToPath } from "node:url";
  * common per-OS install locations, falling back to whatever `codex` is on PATH.
  */
 
+/**
+ * An environment variable's trimmed value, or null when it is unset, empty, or
+ * an unfilled placeholder: a Claude Desktop bundle passes an optional setting
+ * the user left blank as the literal "${user_config.name}".
+ */
+export function readEnv(name, env = process.env) {
+  const raw = env[name];
+  if (raw == null) return null;
+  const v = raw.trim();
+  return v === "" || /^\$\{[^}]*\}$/.test(v) ? null : v;
+}
+
 function envInt(name, fallback) {
-  const raw = process.env[name];
+  const raw = readEnv(name);
   if (raw == null || raw.trim() === "") return fallback;
   const n = Number.parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
 function envStr(name, fallback) {
-  const raw = process.env[name];
-  return raw == null || raw.trim() === "" ? fallback : raw.trim();
+  return readEnv(name) ?? fallback;
 }
 
 /** Settings that were present but unusable; index.js reports them at startup. */
@@ -49,7 +60,7 @@ function envChoice(name, choices, fallback) {
 }
 
 function envBool(name, fallback) {
-  const raw = process.env[name];
+  const raw = readEnv(name);
   if (raw == null || raw.trim() === "") return fallback;
   return raw.trim().toLowerCase() === "true";
 }
@@ -73,6 +84,34 @@ export function parseAllowedDirs(raw, warnings = configWarnings, delimiter = pat
 
 const HOME = os.homedir();
 const PROJECT_ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+
+/**
+ * Where images and Pixmith's own state go by default. A git checkout keeps
+ * both in the project folder (images/, .pixmith/). Installed from npm or as a
+ * Claude Desktop bundle, the code lives in a cache or app folder the user
+ * never opens, so images go to Pictures/Pixmith and state to the usual
+ * per-user application folder instead.
+ */
+export function defaultDirs({
+  root = PROJECT_ROOT,
+  home = HOME,
+  platform = process.platform,
+  env = process.env,
+  exists = fssync.existsSync,
+} = {}) {
+  if (exists(path.join(root, ".git"))) {
+    return { images: path.join(root, "images"), state: path.join(root, ".pixmith"), installed: false };
+  }
+  const pictures = path.join(home, "Pictures");
+  const images = exists(pictures) ? path.join(pictures, "Pixmith") : path.join(home, "Pixmith");
+  let state;
+  if (platform === "win32") state = path.join(env.LOCALAPPDATA || path.join(home, "AppData", "Local"), "Pixmith");
+  else if (platform === "darwin") state = path.join(home, "Library", "Application Support", "Pixmith");
+  else state = path.join(env.XDG_STATE_HOME || path.join(home, ".local", "state"), "pixmith");
+  return { images, state, installed: true };
+}
+
+const DEFAULT_DIRS = defaultDirs();
 
 /** Read the version from package.json so the server never drifts from it. */
 function readPackageVersion() {
@@ -182,12 +221,12 @@ export const config = {
   // Resolved against the project root so a relative override still works.
   defaultOutputDir: path.resolve(
     PROJECT_ROOT,
-    envStr("PIXMITH_OUTPUT_DIR", path.join(PROJECT_ROOT, "images")),
+    envStr("PIXMITH_OUTPUT_DIR", DEFAULT_DIRS.images),
   ),
 
   // Folders output_dir may point into (see parseAllowedDirs); null = any.
   // defaultOutputDir is always allowed.
-  allowedDirs: parseAllowedDirs(process.env.PIXMITH_ALLOWED_DIRS),
+  allowedDirs: parseAllowedDirs(readEnv("PIXMITH_ALLOWED_DIRS")),
 
   // Stop Codex as soon as the finished PNG is on disk instead of waiting for
   // the agent's closing "DONE" turn (which re-uploads the image to the model).
@@ -240,7 +279,7 @@ export const config = {
 
   // Where Pixmith keeps its own small state (recent job durations, used to
   // estimate how long a generation will take). Git-ignored.
-  stateDir: path.resolve(PROJECT_ROOT, envStr("PIXMITH_STATE_DIR", path.join(PROJECT_ROOT, ".pixmith"))),
+  stateDir: path.resolve(PROJECT_ROOT, envStr("PIXMITH_STATE_DIR", DEFAULT_DIRS.state)),
 
   // Whether to return the image inline as MCP image content (base64), and the
   // byte budget for it. Clients cap tool results — Claude Desktop rejects more

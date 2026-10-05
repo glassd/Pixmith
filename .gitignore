@@ -31,3 +31,7 @@ desktop.ini
 
 # Pixmith local state (job duration history)
 .pixmith/
+
+# Build output (npm run bundle)
+dist/
+*.mcpb

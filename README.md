@@ -142,11 +142,59 @@ the stale setting.
 
 ## Install
 
+All three ways need the Codex CLI or the Codex desktop app, signed in with your ChatGPT
+account (see [prerequisites](#prerequisites)).
+
+### Claude Desktop: one-click bundle
+
+Download `pixmith-<version>.mcpb` from the
+[releases page](https://github.com/glassd/Pixmith/releases) and open it (or drag it
+into Claude Desktop's **Settings → Extensions**). Claude Desktop shows Pixmith's
+settings, all optional:
+
+| Setting | What it does |
+|---|---|
+| Codex binary | Leave empty to find Codex automatically. |
+| Image folder | Where images go. Empty: `Pictures/Pixmith` in your home folder. |
+| Other folder images may be saved in | When set, Claude may save only into this folder or the image folder ([`PIXMITH_ALLOWED_DIRS`](#security-notes)). |
+| Images at once | How many images may render at the same time (default 1). |
+
+To build the bundle yourself: `npm ci --omit=dev && npm run bundle` writes
+`dist/pixmith.mcpb`.
+
+### Any MCP client: npm
+
+Run it with `npx`; no clone needed. In Claude Desktop's `claude_desktop_config.json`
+(or any client's `mcpServers` block):
+
+```json
+{
+  "mcpServers": {
+    "pixmith": { "command": "npx", "args": ["-y", "pixmith"] }
+  }
+}
+```
+
+In Claude Code: `claude mcp add pixmith --scope user -- npx -y pixmith`.
+
+### From source
+
 ```bash
-git clone <your-fork-url> Pixmith
+git clone https://github.com/glassd/Pixmith.git
 cd Pixmith
 npm install
 ```
+
+then [register it](#register-pixmith-as-a-connector-in-your-mcp-client) with the path
+to `src/index.js`.
+
+**Where files go.** Run from a git checkout, Pixmith keeps images in `images/` and its
+own state in `.pixmith/` inside the project, as before. Installed as a bundle or from
+npm, the code sits in a folder you never open, so images go to `Pictures/Pixmith` in
+your home folder (or `~/Pixmith` without a Pictures folder), and state to
+`~/Library/Application Support/Pixmith` (macOS), `%LOCALAPPDATA%\Pixmith` (Windows) or
+`~/.local/state/pixmith` (Linux). `PIXMITH_OUTPUT_DIR` and `PIXMITH_STATE_DIR` override
+both.
 
 ## Run / smoke test
 
@@ -458,8 +506,8 @@ when it differs.
 | `PIXMITH_SHOW_USAGE`       | `true`                                               | Add the plan usage line (and near-limit warning) to results.    |
 | `PIXMITH_USAGE_WARN_PERCENT` | `80`                                               | Warn once any plan window is this full.                          |
 | `PIXMITH_USE_CREDITS`      | `ask`                                                | When the plan limit is used up: `ask` (require `use_credits: true`), `always` (run on credits without asking), or `never` (refuse). |
-| `PIXMITH_STATE_DIR`        | `<project>/.pixmith`                                 | Where Pixmith keeps its own state: recent job durations (used for time estimates) and the image history behind `list_images`. |
-| `PIXMITH_OUTPUT_DIR`       | `<project>/images`                                   | Default output directory for generated PNGs.                    |
+| `PIXMITH_STATE_DIR`        | `<project>/.pixmith` (installed: per-user app folder, see [where files go](#from-source)) | Where Pixmith keeps its own state: recent job durations (used for time estimates) and the image history behind `list_images`. |
+| `PIXMITH_OUTPUT_DIR`       | `<project>/images` (installed: `~/Pictures/Pixmith`)  | Default output directory for generated PNGs.                    |
 | `PIXMITH_ALLOWED_DIRS`     | *(unset: any folder)*                                | Folders `output_dir` may point into, separated like `PATH` (`:` on macOS/Linux, `;` on Windows), e.g. `/Users/you/Pictures:/Users/you/projects`. The default output folder is always allowed. See [security notes](#security-notes). |
 | `CODEX_HOME`               | `~/.codex`                                            | Codex home (used to locate the backup `generated_images/` copy). |
 | `PIXMITH_TIMEOUT_MS`       | `300000` (5 min)                                     | Hard timeout per generation.                                    |
@@ -475,8 +523,9 @@ See [`.env.example`](.env.example) for a copy-paste starting point.
 
 ## Register Pixmith as a connector in your MCP client
 
-Pixmith does **not** register itself. Replace `/path/to/Pixmith` below with the
-absolute path where you cloned this repo.
+For a [source install](#from-source). (The bundle registers itself, and the npm route
+only needs the `npx` entry above.) Pixmith does **not** register itself: replace
+`/path/to/Pixmith` below with the absolute path where you cloned this repo.
 
 ### Claude Desktop
 
@@ -517,7 +566,8 @@ if you need to override the detected path, e.g.
 `"env": { "CODEX_BIN": "C:/Users/you/AppData/Local/Programs/codex/codex.exe" }`.
 
 Then **quit and reopen** the app. Pixmith appears as a connector exposing the
-`generate_image`, `edit_image`, `get_image_result` and `cancel_image` tools.
+`generate_image`, `edit_image`, `get_image_result`, `cancel_image`, `list_images` and
+`pixmith_status` tools.
 
 ### Claude Code (CLI)
 
