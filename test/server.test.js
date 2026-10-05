@@ -34,6 +34,7 @@ async function connect({
   historyFile = null,
   runCodexCommand,
   configWarnings,
+  allowedDirs = null,
 } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pixmith-server-"));
   const png = path.join(dir, "out.png");
@@ -67,6 +68,7 @@ async function connect({
     timeoutMs: 300_000,
     sandbox: "workspace-write",
     bypassSandbox: false,
+    allowedDirs: typeof allowedDirs === "function" ? allowedDirs(dir) : allowedDirs,
   };
   const server = createServer({ jobs, config, readUsage: async () => usage, history, runCodexCommand, configWarnings });
   const client = new Client({ name: "test-client", version: "1.0.0" });
@@ -523,5 +525,35 @@ test("pixmith_status: reports readiness, and each problem with its next step", a
     assert.match(text, /^Warnings:\n- PIXMITH_X was ignored\.$/m);
   } finally {
     await broken.close();
+  }
+});
+
+test("allowed folders: output_dir outside them is refused before any job, and the tools say which are allowed", async () => {
+  const fakeCodex = async (args) =>
+    args[0] === "--version"
+      ? { code: 0, stdout: "codex-cli 0.46.0", stderr: "", error: null }
+      : { code: 0, stdout: "", stderr: "Logged in using ChatGPT", error: null };
+  const t = await connect({ allowedDirs: (dir) => [path.join(dir, "allowed")], runCodexCommand: fakeCodex, pollWaitMs: 2000 });
+  try {
+    const allowed = path.join(t.dir, "allowed");
+    const description = t.tools.find((tool) => tool.name === "generate_image").inputSchema.properties.output_dir.description;
+    assert.ok(description.endsWith(` Must be inside one of: ${path.join(t.dir, "images")}, ${allowed} (PIXMITH_ALLOWED_DIRS).`));
+
+    const refused = await t.callTool("generate_image", { prompt: "a fox", output_dir: path.join(t.dir, "elsewhere") });
+    assert.equal(refused.isError, true);
+    assert.equal(refused.structuredContent.error.kind, "dir_not_allowed");
+    assert.match(refused.structuredContent.error.next_step, /PIXMITH_ALLOWED_DIRS/);
+    assert.equal(t.calls.length, 0, "no job was started");
+
+    const pending = t.callTool("generate_image", { prompt: "a fox", output_dir: path.join(allowed, "sub") });
+    await settleInOrder(t, [t.result()]);
+    assert.equal((await pending).structuredContent.status, "done");
+    assert.equal(t.calls[0].args.outputDir, path.join(allowed, "sub"));
+
+    const status = await t.callTool("pixmith_status");
+    assert.deepEqual(status.structuredContent.settings.allowed_dirs, [path.join(t.dir, "images"), allowed]);
+    assert.match(status.content[0].text, new RegExp(`^Folders output_dir may use: .*${allowed.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}$`, "m"));
+  } finally {
+    await t.close();
   }
 });

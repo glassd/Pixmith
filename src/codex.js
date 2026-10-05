@@ -608,6 +608,51 @@ export async function writeMetadata(pngPath, meta) {
   }
 }
 
+/**
+ * The real path of `p` with symlinks resolved in the part that exists; the
+ * rest (folders not created yet) is appended unchanged.
+ */
+async function realPathLoose(p) {
+  let current = path.resolve(p);
+  const rest = [];
+  for (;;) {
+    try {
+      return path.join(await fs.realpath(current), ...rest);
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return path.resolve(p);
+      rest.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+/** Whether `target` is `root` or inside it. Case-insensitive where the usual file systems are. */
+function isInside(target, root) {
+  const fold = process.platform === "win32" || process.platform === "darwin" ? (x) => x.toLowerCase() : (x) => x;
+  const rel = path.relative(fold(root), fold(target));
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+}
+
+/**
+ * Refuse an output_dir outside the allowed folders (PIXMITH_ALLOWED_DIRS) with
+ * a dir_not_allowed error; `allowedDirs` null allows any folder. The default
+ * output folder is always allowed. Symlinks are resolved first, so a link
+ * inside an allowed folder cannot lead out of it.
+ */
+export async function assertOutputDirAllowed(dir, { allowedDirs = config.allowedDirs, defaultOutputDir = config.defaultOutputDir } = {}) {
+  if (!allowedDirs) return;
+  const roots = [defaultOutputDir, ...allowedDirs];
+  const target = await realPathLoose(dir);
+  for (const root of roots) {
+    if (isInside(target, await realPathLoose(root))) return;
+  }
+  throw new PixmithError(
+    "dir_not_allowed",
+    `\`output_dir\` "${dir}" is outside the folders Pixmith may save into: ${roots.join(", ")}.`,
+  );
+}
+
 export const MAX_INPUT_IMAGES = 4;
 export const MAX_INPUT_IMAGE_BYTES = 20 * 1024 * 1024;
 
@@ -766,6 +811,7 @@ export async function generateImage({
 
   // 2. Resolve and prepare destination.
   const destDir = path.resolve(outputDir ? outputDir.trim() : config.defaultOutputDir);
+  await assertOutputDirAllowed(destDir);
   await fs.mkdir(destDir, { recursive: true });
 
   const baseName = chosenName ?? `${slugForFilename(prompt)}-${uniqueStamp()}`.replace(SAFE_NAME, "-");

@@ -170,6 +170,7 @@ export async function checkStatus({
       timeout_seconds: Math.round(config.timeoutMs / 1000),
       sandbox: config.bypassSandbox ? "bypassed" : config.sandbox,
       credits_policy: config.creditsPolicy,
+      allowed_dirs: config.allowedDirs ? [config.defaultOutputDir, ...config.allowedDirs] : null,
       codex_model: config.codexModel ?? null,
       codex_effort: config.codexEffort ?? null,
     },
