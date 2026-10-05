@@ -246,7 +246,7 @@ test("usage: every finished result reports plan usage, with a warning near the l
     await new Promise((r) => setTimeout(r, 20));
     t.calls[0].resolve(t.result({ sessionId: "abc" }));
     const out = textOf(await pending);
-    assert.match(out, /Plan usage: 86% of the 5-hour limit \(resets at \d\d:\d\d\), 3% of the weekly limit \(resets \w{3} at \d\d:\d\d\)\./);
+    assert.match(out, /Plan usage: 86% of the 5-hour limit \(resets (?:\w{3} )?at \d\d:\d\d\), 3% of the weekly limit \(resets \w{3} at \d\d:\d\d\)\./);
     assert.match(out, /Usage warning: the 5-hour limit is nearly used up\. After that, jobs stop until the limit resets/);
     assert.match(out, /Settings > Usage/);
     assert.deepEqual(t.usageCalls.at(-1), { sessionId: "abc" }, "the job's own session log is preferred");
@@ -277,7 +277,7 @@ test("credits: once the plan limit is used up, a job needs the user's consent", 
   try {
     const refused = await t.call("generate_image", { prompt: "a fox" });
     assert.equal(refused.isError, true);
-    assert.match(textOf(refused), /\[credits_confirmation_needed\] Your ChatGPT plan's 5-hour limit for Codex is used up; it resets at \d\d:\d\d\./);
+    assert.match(textOf(refused), /\[credits_confirmation_needed\] Your ChatGPT plan's 5-hour limit for Codex is used up; it resets (?:\w{3} )?at \d\d:\d\d\./);
     assert.match(textOf(refused), /250 credits available, and Codex would spend them/);
     assert.match(textOf(refused), /call the tool again with use_credits: true/);
     assert.equal(t.calls.length, 0, "no job was started");
