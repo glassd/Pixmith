@@ -111,21 +111,32 @@ test("generateImage: aborting kills Codex and reports cancelled", async () => {
   await reset();
   const ac = new AbortController();
   const stages = [];
-  const pending = generateImage({ prompt: "a fox", signal: ac.signal, onStage: (s) => { stages.push(s); if (s === "session_started") ac.abort(); } });
+  const pending = generateImage({
+    prompt: "a fox",
+    signal: ac.signal,
+    onStage: (s) => {
+      stages.push(s);
+      if (s === "session_started") ac.abort();
+    },
+  });
   await assert.rejects(pending, (e) => e.kind === "cancelled");
   assert.deepEqual(stages, ["starting", "session_started"]);
 });
 
-test("generateImage: a cancel that lands before Codex starts stops the job without running Codex", { timeout: 15_000 }, async () => {
-  process.env.FAKE_MODE = "hang";
-  await reset();
-  await fs.rm(path.join(codexHome, "last-call.json"), { force: true });
-  const ac = new AbortController();
-  // "starting" is reported after the pre-run snapshot, just before Codex is spawned.
-  const onStage = (s) => s === "starting" && ac.abort();
-  await assert.rejects(generateImage({ prompt: "a fox", signal: ac.signal, onStage }), (e) => e.kind === "cancelled");
-  await assert.rejects(fs.access(path.join(codexHome, "last-call.json")), "Codex was never launched");
-});
+test(
+  "generateImage: a cancel that lands before Codex starts stops the job without running Codex",
+  { timeout: 15_000 },
+  async () => {
+    process.env.FAKE_MODE = "hang";
+    await reset();
+    await fs.rm(path.join(codexHome, "last-call.json"), { force: true });
+    const ac = new AbortController();
+    // "starting" is reported after the pre-run snapshot, just before Codex is spawned.
+    const onStage = (s) => s === "starting" && ac.abort();
+    await assert.rejects(generateImage({ prompt: "a fox", signal: ac.signal, onStage }), (e) => e.kind === "cancelled");
+    await assert.rejects(fs.access(path.join(codexHome, "last-call.json")), "Codex was never launched");
+  },
+);
 
 test("generateImage: output paths with spaces and brackets reach Codex intact", async () => {
   process.env.FAKE_MODE = "ok";
@@ -137,32 +148,45 @@ test("generateImage: output paths with spaces and brackets reach Codex intact", 
   assert.equal(args[args.indexOf("-C") + 1], dir);
 });
 
-test("generateImage: refuses paths cmd.exe would interpret instead of running them", { skip: !isWindows && "only .cmd shims go through cmd.exe" }, async () => {
-  process.env.FAKE_MODE = "ok";
-  await reset();
-  await fs.rm(path.join(codexHome, "last-call.json"), { force: true });
-  for (const name of ["out&echo pwned", "100%PATH%", "a^b"]) {
-    await assert.rejects(
-      generateImage({ prompt: "a fox", outputDir: path.join(root, name) }),
-      (e) => e.kind === "bad_request" && /cmd\.exe/.test(e.message),
-      name,
-    );
-  }
-  await assert.rejects(fs.access(path.join(codexHome, "last-call.json")), "Codex was never launched");
-});
+test(
+  "generateImage: refuses paths cmd.exe would interpret instead of running them",
+  { skip: !isWindows && "only .cmd shims go through cmd.exe" },
+  async () => {
+    process.env.FAKE_MODE = "ok";
+    await reset();
+    await fs.rm(path.join(codexHome, "last-call.json"), { force: true });
+    for (const name of ["out&echo pwned", "100%PATH%", "a^b"]) {
+      await assert.rejects(
+        generateImage({ prompt: "a fox", outputDir: path.join(root, name) }),
+        (e) => e.kind === "bad_request" && /cmd\.exe/.test(e.message),
+        name,
+      );
+    }
+    await assert.rejects(fs.access(path.join(codexHome, "last-call.json")), "Codex was never launched");
+  },
+);
 
 test("generateImage: classifies usage limits and refusals", async () => {
   await reset();
   process.env.FAKE_MODE = "limit";
-  await assert.rejects(generateImage({ prompt: "a fox" }), (e) => e.kind === "usage_limit" && /usage limit/.test(e.detail));
+  await assert.rejects(
+    generateImage({ prompt: "a fox" }),
+    (e) => e.kind === "usage_limit" && /usage limit/.test(e.detail),
+  );
   process.env.FAKE_MODE = "refuse";
-  await assert.rejects(generateImage({ prompt: "a fox" }), (e) => e.kind === "generation_failed" && /content policy/.test(e.message));
+  await assert.rejects(
+    generateImage({ prompt: "a fox" }),
+    (e) => e.kind === "generation_failed" && /content policy/.test(e.message),
+  );
 });
 
 test("generateImage: text split mid-character across output chunks is decoded intact", async () => {
   await reset();
   process.env.FAKE_MODE = "refuse-split";
-  await assert.rejects(generateImage({ prompt: "a fox" }), (e) => e.kind === "generation_failed" && e.message.endsWith("refusé — 内容"));
+  await assert.rejects(
+    generateImage({ prompt: "a fox" }),
+    (e) => e.kind === "generation_failed" && e.message.endsWith("refusé — 内容"),
+  );
 });
 
 test("readUsage: newest session log wins, the job's own log is preferred, big logs are read from the tail", async () => {
@@ -186,7 +210,10 @@ test("readUsage: newest session log wins, the job's own log is preferred, big lo
   const newer = path.join(dir, "rollout-b-22222222-2222-2222-2222-222222222222.jsonl");
   // The newer log is large, like a real one that carries a base64 image, with the snapshot at the end.
   await fs.writeFile(older, `${entry(10, "2026-09-21T10:00:00Z")}\n`);
-  await fs.writeFile(newer, `${JSON.stringify({ payload: { blob: "A".repeat(400_000) } })}\n${entry(42, "2026-09-21T11:00:00Z")}\n`);
+  await fs.writeFile(
+    newer,
+    `${JSON.stringify({ payload: { blob: "A".repeat(400_000) } })}\n${entry(42, "2026-09-21T11:00:00Z")}\n`,
+  );
   const past = new Date(Date.now() - 60_000);
   await fs.utimes(older, past, past);
 
@@ -229,7 +256,10 @@ test("generateImage: without a session id, only a folder that appeared during th
 
   const res = await generateImage({ prompt: "a fox" });
   assert.equal(res.sessionId, null);
-  assert.equal(res.codexHomeCopy, path.join(codexHome, "generated_images", "0a0b0c0d-1111-2222-3333-444455556666", "exec-1.png"));
+  assert.equal(
+    res.codexHomeCopy,
+    path.join(codexHome, "generated_images", "0a0b0c0d-1111-2222-3333-444455556666", "exec-1.png"),
+  );
 });
 
 test("listRolloutLogs: reads only the newest day folders unless asked for all", async () => {
@@ -242,7 +272,11 @@ test("listRolloutLogs: reads only the newest day folders unless asked for all", 
   }
   try {
     const names = (m) => [...m.keys()].map((p) => path.basename(p)).sort();
-    assert.deepEqual(names(await listRolloutLogs()), ["rollout-2026-09-02.jsonl", "rollout-2026-09-10.jsonl", "rollout-2026-10-01.jsonl"]);
+    assert.deepEqual(names(await listRolloutLogs()), [
+      "rollout-2026-09-02.jsonl",
+      "rollout-2026-09-10.jsonl",
+      "rollout-2026-10-01.jsonl",
+    ]);
     assert.equal((await listRolloutLogs({ days: Infinity })).size, days.length);
   } finally {
     await fs.rm(sessions, { recursive: true, force: true });
@@ -372,7 +406,10 @@ test("generateImage: a chosen filename is used, and never overwrites", async () 
   assert.equal(third.path, path.join(dir, "Brand-Logo-4.png"));
   assert.notDeepEqual(await fs.readFile(first.path), Buffer.alloc(0), "the first file is untouched");
 
-  await assert.rejects(generateImage({ prompt: "a logo", outputDir: dir, filename: "../escape" }), (e) => e.kind === "bad_request");
+  await assert.rejects(
+    generateImage({ prompt: "a logo", outputDir: dir, filename: "../escape" }),
+    (e) => e.kind === "bad_request",
+  );
 });
 
 test("runCodexCommand + checkStatus: the real commands against the fake Codex", async () => {
@@ -380,7 +417,12 @@ test("runCodexCommand + checkStatus: the real commands against the fake Codex", 
   assert.equal(version.code, 0);
   assert.match(version.stdout, /codex-cli 0\.99\.0-fake/);
 
-  for (const [login, state] of [["chatgpt", "chatgpt"], ["apikey", "api_key"], ["out", "signed_out"], ["unsupported", "unknown"]]) {
+  for (const [login, state] of [
+    ["chatgpt", "chatgpt"],
+    ["apikey", "api_key"],
+    ["out", "signed_out"],
+    ["unsupported", "unknown"],
+  ]) {
     process.env.FAKE_LOGIN = login;
     try {
       const r = await checkStatus({ config });

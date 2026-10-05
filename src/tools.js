@@ -49,7 +49,8 @@ const ERROR_SCHEMA = {
   properties: {
     kind: {
       type: "string",
-      description: "Machine-readable kind, e.g. bad_request, usage_limit, credits_confirmation_needed, not_signed_in, timeout, generation_failed.",
+      description:
+        "Machine-readable kind, e.g. bad_request, usage_limit, credits_confirmation_needed, not_signed_in, timeout, generation_failed.",
     },
     message: { type: "string" },
     next_step: { type: "string", description: "What the user can do about it." },
@@ -103,7 +104,10 @@ const JOB_PROPERTIES = {
   bytes: { type: "integer" },
   source_image: { type: "string", description: "The image an edit was made from." },
   codex_copy: { type: "string", description: "Codex's own copy of the PNG under CODEX_HOME." },
-  metadata_path: { type: "string", description: "The JSON sidecar beside the PNG recording its prompt, sizes and sources." },
+  metadata_path: {
+    type: "string",
+    description: "The JSON sidecar beside the PNG recording its prompt, sizes and sources.",
+  },
   inline_image: {
     type: ["object", "null"],
     description: "The image sent in `content`; null when none was sent.",
@@ -132,7 +136,8 @@ export const JOB_OUTPUT_SCHEMA = {
     job_ids: {
       type: "array",
       items: { type: "string" },
-      description: "With variants > 1: every variant's job_id, in order. Each is collected with get_image_result on its own.",
+      description:
+        "With variants > 1: every variant's job_id, in order. Each is collected with get_image_result on its own.",
     },
     variants: {
       type: "array",
@@ -177,7 +182,11 @@ export const LIST_OUTPUT_SCHEMA = {
 export const STATUS_OUTPUT_SCHEMA = {
   type: "object",
   properties: {
-    status: { type: "string", enum: ["ready", "problems", "error"], description: '"ready" when nothing stands in the way of a job.' },
+    status: {
+      type: "string",
+      enum: ["ready", "problems", "error"],
+      description: '"ready" when nothing stands in the way of a job.',
+    },
     pixmith_version: { type: "string" },
     node_version: { type: "string" },
     platform: { type: "string" },
@@ -200,9 +209,21 @@ export const STATUS_OUTPUT_SCHEMA = {
     },
     usage: USAGE_SCHEMA,
     limit_reached: { type: "boolean", description: "A new job would need consent to run on paid credits." },
-    output_dir: { type: "object", properties: { path: { type: "string" }, writable: { type: "boolean" } }, required: ["path", "writable"] },
-    state_dir: { type: "object", properties: { path: { type: "string" }, writable: { type: "boolean" } }, required: ["path", "writable"] },
-    jobs: { type: "object", properties: { running: { type: "integer" }, queued: { type: "integer" } }, required: ["running", "queued"] },
+    output_dir: {
+      type: "object",
+      properties: { path: { type: "string" }, writable: { type: "boolean" } },
+      required: ["path", "writable"],
+    },
+    state_dir: {
+      type: "object",
+      properties: { path: { type: "string" }, writable: { type: "boolean" } },
+      required: ["path", "writable"],
+    },
+    jobs: {
+      type: "object",
+      properties: { running: { type: "integer" }, queued: { type: "integer" } },
+      required: ["running", "queued"],
+    },
     codex_copies: {
       type: "object",
       description: "Codex's own duplicate copies of Pixmith's images, still under CODEX_HOME.",
@@ -378,7 +399,8 @@ export function createTools({
       properties: {
         image: {
           type: "string",
-          description: "Required. Absolute path of the image to edit (PNG, JPEG, WebP or GIF) — e.g. the Path returned by generate_image.",
+          description:
+            "Required. Absolute path of the image to edit (PNG, JPEG, WebP or GIF) — e.g. the Path returned by generate_image.",
         },
         prompt: {
           type: "string",
@@ -426,7 +448,10 @@ export function createTools({
     inputSchema: {
       type: "object",
       properties: {
-        job_id: { type: "string", description: "Optional. The job to cancel. Defaults to the most recent unfinished job." },
+        job_id: {
+          type: "string",
+          description: "Optional. The job to cancel. Defaults to the most recent unfinished job.",
+        },
       },
       additionalProperties: false,
     },
@@ -441,9 +466,21 @@ export function createTools({
     inputSchema: {
       type: "object",
       properties: {
-        limit: { type: "integer", minimum: 1, maximum: 50, description: "Optional. How many to return, 1-50. Default 10." },
-        query: { type: "string", description: "Optional. Only images whose prompt contains this text (case-insensitive)." },
-        mode: { type: "string", enum: ["generate", "edit"], description: "Optional. Only generated, or only edited, images." },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 50,
+          description: "Optional. How many to return, 1-50. Default 10.",
+        },
+        query: {
+          type: "string",
+          description: "Optional. Only images whose prompt contains this text (case-insensitive).",
+        },
+        mode: {
+          type: "string",
+          enum: ["generate", "edit"],
+          description: "Optional. Only generated, or only edited, images.",
+        },
       },
       additionalProperties: false,
     },
@@ -527,7 +564,10 @@ export function createTools({
     }
     const images = await validateInputImages(paths);
     if (common.outputDir) {
-      await assertOutputDirAllowed(common.outputDir, { allowedDirs: config.allowedDirs, defaultOutputDir: config.defaultOutputDir });
+      await assertOutputDirAllowed(common.outputDir, {
+        allowedDirs: config.allowedDirs,
+        defaultOutputDir: config.defaultOutputDir,
+      });
     }
 
     // Plan limit already used up? Then this job would run on paid credits (or
@@ -639,7 +679,13 @@ export function createTools({
     if (job.status === "done") return doneParts(job, inlineBudget);
 
     if (job.status === "error") {
-      return { ...base, status: "error", head: [`status: error`, `job_id: ${job.id}`], errorText: formatError(job.error), data: errorData(job.error, job) };
+      return {
+        ...base,
+        status: "error",
+        head: [`status: error`, `job_id: ${job.id}`],
+        errorText: formatError(job.error),
+        data: errorData(job.error, job),
+      };
     }
 
     if (job.status === "cancelled") {
@@ -666,7 +712,9 @@ export function createTools({
     };
     if (job.status === "queued") {
       data.queue_position = jobs.queuePosition(job.id);
-      head.push(`queue_position: ${data.queue_position} (max ${jobs.maxConcurrent} at once; each takes ~${typicalSecs}s)`);
+      head.push(
+        `queue_position: ${data.queue_position} (max ${jobs.maxConcurrent} at once; each takes ~${typicalSecs}s)`,
+      );
     } else {
       const outlook = elapsed > typicalSecs ? "taking longer than usual" : `about ${secs(jobs.remainingMs(job))}s left`;
       head.push(`elapsed: ${elapsed}s (typical: ~${typicalSecs}s, ${outlook})`);
@@ -698,7 +746,8 @@ export function createTools({
     // Report the PNG's real dimensions; gpt-image-2 does not always return
     // exactly the requested size, and "auto" has no fixed size at all.
     const sizeParts = [];
-    if (result.requestedSize && result.requestedSize !== result.size) sizeParts.push(`requested ${result.requestedSize}`);
+    if (result.requestedSize && result.requestedSize !== result.size)
+      sizeParts.push(`requested ${result.requestedSize}`);
     if (result.sizeNote) sizeParts.push(result.sizeNote);
     const verb = job.mode === "edit" ? "edited" : "generated";
     const head = [
@@ -748,7 +797,10 @@ export function createTools({
                 ? `Inline preview: ${inline.width}x${inline.height} JPEG, sized to fit the client's tool-result limit.${flattened} The full-quality PNG is at the path above.`
                 : null,
             }
-          : { item: null, note: `(Image not inlined: no preview fits within PIXMITH_MAX_INLINE_BYTES=${config.maxInlineBytes}. Open it from the path above.)` };
+          : {
+              item: null,
+              note: `(Image not inlined: no preview fits within PIXMITH_MAX_INLINE_BYTES=${config.maxInlineBytes}. Open it from the path above.)`,
+            };
       } catch (err) {
         job.inline = { item: null, note: `(Could not inline image: ${err.message}. Open it from the path above.)` };
       }
@@ -867,7 +919,10 @@ export function createTools({
         if (entry) job = jobFromEntry(entry);
         // Codex's copy may have been pruned since.
         if (job?.result.codexHomeCopy) {
-          job.result.codexHomeCopy = await fs.access(job.result.codexHomeCopy).then(() => job.result.codexHomeCopy, () => null);
+          job.result.codexHomeCopy = await fs.access(job.result.codexHomeCopy).then(
+            () => job.result.codexHomeCopy,
+            () => null,
+          );
         }
       }
       if (!job) {
@@ -882,7 +937,9 @@ export function createTools({
     if (!job) {
       throw new PixmithError(
         "unknown_job",
-        activeOnly ? "There is no queued or running job to cancel." : "No jobs yet — call generate_image or edit_image first.",
+        activeOnly
+          ? "There is no queued or running job to cancel."
+          : "No jobs yet — call generate_image or edit_image first.",
       );
     }
     return job;
@@ -940,7 +997,9 @@ export function createTools({
     if (mode != null && mode !== "generate" && mode !== "edit") {
       throw new PixmithError("bad_request", '`mode` must be "generate" or "edit".');
     }
-    const { images, total } = history ? await history.list({ limit, query: query?.trim() || null, mode }) : { images: [], total: 0 };
+    const { images, total } = history
+      ? await history.list({ limit, query: query?.trim() || null, mode })
+      : { images: [], total: 0 };
 
     const listed = images.map((e) => ({
       path: e.path,
@@ -954,7 +1013,10 @@ export function createTools({
       source_image: e.mode === "edit" ? e.input_images?.[0] : undefined,
       metadata_path: e.metadata_path ?? undefined,
     }));
-    const filters = [query?.trim() && `matching "${query.trim()}"`, mode && `${mode === "edit" ? "edited" : "generated"} only`].filter(Boolean);
+    const filters = [
+      query?.trim() && `matching "${query.trim()}"`,
+      mode && `${mode === "edit" ? "edited" : "generated"} only`,
+    ].filter(Boolean);
     const lines = [
       total === 0
         ? `No images found${filters.length ? ` (${filters.join(", ")})` : ""}.`
@@ -974,7 +1036,10 @@ export function createTools({
       lines.push(`   job_id: ${img.job_id}`);
     });
     if (listed.length) {
-      lines.push("", "To change one, call edit_image with its Path. get_image_result with its job_id returns it again, with the image.");
+      lines.push(
+        "",
+        "To change one, call edit_image with its Path. get_image_result with its job_id returns it again, with the image.",
+      );
     }
     return withData(text(lines), { status: "ok", images: listed, total });
   }
@@ -1011,7 +1076,9 @@ export function createTools({
       `Signed in: ${signIn}${r.sign_in.detail ? `. ${r.sign_in.detail}` : ""}`,
     );
     const usageText = usageLines(usage, { warnPercent: config.usageWarnPercent });
-    lines.push(...(usageText.length ? usageText : ["Plan usage: no recent figures (Codex records them during a session)."]));
+    lines.push(
+      ...(usageText.length ? usageText : ["Plan usage: no recent figures (Codex records them during a session)."]),
+    );
     lines.push(
       `Output folder: ${r.output_dir.path} (${r.output_dir.writable ? "writable" : "NOT writable"})`,
       `Folders output_dir may use: ${r.settings.allowed_dirs ? r.settings.allowed_dirs.join(", ") : "any (PIXMITH_ALLOWED_DIRS is not set)"}`,
@@ -1062,7 +1129,8 @@ function text(lines) {
 
 /** What the user can do about each kind of failure — appended to the error text. */
 const NEXT_STEPS = {
-  binary_missing: "Install the Codex CLI or the Codex desktop app, or set CODEX_BIN, then retry. pixmith_status checks the setup.",
+  binary_missing:
+    "Install the Codex CLI or the Codex desktop app, or set CODEX_BIN, then retry. pixmith_status checks the setup.",
   not_signed_in: "Run `codex login` (or sign in from the Codex app), then retry. pixmith_status checks the setup.",
   usage_limit:
     "Nothing is wrong with the request. Retry once the ChatGPT plan's limit has reset, or add credits in ChatGPT under Settings > Usage.",
@@ -1071,7 +1139,8 @@ const NEXT_STEPS = {
     "Save into one of the allowed folders, or leave output_dir out. Only the user can allow another folder, by adding it to PIXMITH_ALLOWED_DIRS.",
   timeout: "Retry, use a smaller size, or raise PIXMITH_TIMEOUT_MS.",
   generation_failed: "If the request was refused, rephrase the prompt; otherwise retry.",
-  no_output: "Retry once. If it keeps failing, call pixmith_status, and run `codex exec \"hello\"` to check that Codex itself works.",
+  no_output:
+    'Retry once. If it keeps failing, call pixmith_status, and run `codex exec "hello"` to check that Codex itself works.',
 };
 
 export function formatError(err) {
@@ -1102,5 +1171,9 @@ function errorData(err, job = null) {
 function compact(obj) {
   if (Array.isArray(obj)) return obj.map(compact);
   if (!obj || typeof obj !== "object") return obj;
-  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined).map(([k, v]) => [k, compact(v)]));
+  return Object.fromEntries(
+    Object.entries(obj)
+      .filter(([, v]) => v !== undefined)
+      .map(([k, v]) => [k, compact(v)]),
+  );
 }

@@ -47,7 +47,10 @@ async function setup() {
     usageWarnPercent: 80,
   };
   // A fake `codex` for the two commands checkStatus runs.
-  const commands = { version: { code: 0, stdout: "codex-cli 0.46.0\n", stderr: "", error: null }, login: { code: 0, stdout: "", stderr: "Logged in using ChatGPT\n", error: null } };
+  const commands = {
+    version: { code: 0, stdout: "codex-cli 0.46.0\n", stderr: "", error: null },
+    login: { code: 0, stdout: "", stderr: "Logged in using ChatGPT\n", error: null },
+  };
   const runCommand = async (args) => (args[0] === "--version" ? commands.version : commands.login);
   return { dir, config, commands, runCommand, cleanup: () => fs.rm(dir, { recursive: true, force: true }) };
 }
@@ -94,7 +97,10 @@ test("checkStatus: each problem comes with a next step", async () => {
     t.commands.login = { code: null, stdout: "", stderr: "", error: "ENOENT" };
     let r = await checkStatus({ config: t.config, runCommand: t.runCommand });
     assert.equal(r.status, "problems");
-    assert.deepEqual(r.problems.map((p) => p.kind), ["binary_missing"]);
+    assert.deepEqual(
+      r.problems.map((p) => p.kind),
+      ["binary_missing"],
+    );
     assert.match(r.problems[0].next_step, /CODEX_BIN/);
     assert.equal(r.codex.found, false);
 
@@ -105,7 +111,11 @@ test("checkStatus: each problem comes with a next step", async () => {
       await fs.writeFile(path.join(fresh.dir, "blocker"), "a file, not a folder");
       fresh.config.defaultOutputDir = path.join(fresh.dir, "blocker", "images");
       r = await checkStatus({ config: fresh.config, runCommand: fresh.runCommand, readUsage: async () => USAGE(100) });
-      assert.deepEqual(r.problems.map((p) => p.kind).sort(), ["not_signed_in", "output_dir_not_writable", "usage_limit"]);
+      assert.deepEqual(r.problems.map((p) => p.kind).sort(), [
+        "not_signed_in",
+        "output_dir_not_writable",
+        "usage_limit",
+      ]);
       assert.equal(r.limit_reached, true);
       assert.ok(r.problems.every((p) => p.message && p.next_step));
     } finally {
@@ -121,7 +131,11 @@ test("checkStatus: warnings for an API-key sign-in, an old Codex, and config pro
   try {
     t.commands.login = { code: 0, stdout: "", stderr: "Logged in using an API key - sk-proj-***ABCD\n", error: null };
     t.config.codexBinNote = "CODEX_BIN is stale.";
-    let r = await checkStatus({ config: t.config, runCommand: t.runCommand, configWarnings: ['PIXMITH_SANDBOX="x" was ignored.'] });
+    let r = await checkStatus({
+      config: t.config,
+      runCommand: t.runCommand,
+      configWarnings: ['PIXMITH_SANDBOX="x" was ignored.'],
+    });
     assert.equal(r.status, "ready", "warnings alone do not stop jobs");
     assert.equal(r.sign_in.state, "api_key");
     assert.equal(r.warnings.length, 3);
@@ -147,7 +161,12 @@ test("checkStatus: Codex's duplicate copies are counted from the history", async
   try {
     const copy = path.join(t.dir, "ig_1.png");
     await fs.writeFile(copy, "12345");
-    const history = { entries: async () => [{ job_id: "a", path: "/x.png", codex_copy: copy }, { job_id: "b", path: "/y.png", codex_copy: path.join(t.dir, "gone.png") }] };
+    const history = {
+      entries: async () => [
+        { job_id: "a", path: "/x.png", codex_copy: copy },
+        { job_id: "b", path: "/y.png", codex_copy: path.join(t.dir, "gone.png") },
+      ],
+    };
     let r = await checkStatus({ config: t.config, runCommand: t.runCommand, history });
     assert.deepEqual(r.codex_copies, { count: 1, bytes: 5, policy: "keep" });
     r = await checkStatus({ config: { ...t.config, codexCopies: "remove" }, runCommand: t.runCommand });

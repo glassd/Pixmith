@@ -80,7 +80,14 @@ const ACTIVE = new Set(["queued", "running"]);
  * keeps this module free of Codex and easy to test.
  */
 export class JobManager {
-  constructor({ generate, maxConcurrent = 1, ttlMs = 15 * 60 * 1000, stats = new DurationStats(), history = null, log = () => {} }) {
+  constructor({
+    generate,
+    maxConcurrent = 1,
+    ttlMs = 15 * 60 * 1000,
+    stats = new DurationStats(),
+    history = null,
+    log = () => {},
+  }) {
     this.generate = generate;
     this.history = history; // ImageHistory: finished images are recorded there
     this.maxConcurrent = maxConcurrent;

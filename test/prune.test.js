@@ -27,7 +27,11 @@ async function pair(name, { session = name, bytes = `png-${name}`, codexBytes = 
 }
 
 const historyOf = (entries) => ({ entries: async () => entries });
-const exists = (p) => fs.access(p).then(() => true, () => false);
+const exists = (p) =>
+  fs.access(p).then(
+    () => true,
+    () => false,
+  );
 
 test("pruneCodexCopies: deletes only byte-identical copies inside generated_images", async () => {
   await fs.rm(generated, { recursive: true, force: true });
@@ -70,21 +74,29 @@ test("pruneCodexCopies: deletes only byte-identical copies inside generated_imag
   assert.ok(await exists(same.path), "Pixmith's own copies are untouched");
 });
 
-test("pruneCodexCopies: a symlinked folder cannot lead the delete out of generated_images", { skip: process.platform === "win32" && "creating symlinks needs extra rights on Windows" }, async () => {
-  await fs.rm(generated, { recursive: true, force: true });
-  const elsewhere = path.join(root, "elsewhere");
-  await fs.mkdir(elsewhere, { recursive: true });
-  await fs.writeFile(path.join(elsewhere, "ig_1.png"), "png-x");
-  await fs.mkdir(generated, { recursive: true });
-  await fs.symlink(elsewhere, path.join(generated, "evil"));
-  await fs.mkdir(path.join(root, "images"), { recursive: true });
-  await fs.writeFile(path.join(root, "images", "x.png"), "png-x");
-  const entry = { job_id: "x", path: path.join(root, "images", "x.png"), codex_copy: path.join(generated, "evil", "ig_1.png") };
+test(
+  "pruneCodexCopies: a symlinked folder cannot lead the delete out of generated_images",
+  { skip: process.platform === "win32" && "creating symlinks needs extra rights on Windows" },
+  async () => {
+    await fs.rm(generated, { recursive: true, force: true });
+    const elsewhere = path.join(root, "elsewhere");
+    await fs.mkdir(elsewhere, { recursive: true });
+    await fs.writeFile(path.join(elsewhere, "ig_1.png"), "png-x");
+    await fs.mkdir(generated, { recursive: true });
+    await fs.symlink(elsewhere, path.join(generated, "evil"));
+    await fs.mkdir(path.join(root, "images"), { recursive: true });
+    await fs.writeFile(path.join(root, "images", "x.png"), "png-x");
+    const entry = {
+      job_id: "x",
+      path: path.join(root, "images", "x.png"),
+      codex_copy: path.join(generated, "evil", "ig_1.png"),
+    };
 
-  const result = await pruneCodexCopies({ history: historyOf([entry]) });
-  assert.deepEqual(result.removed, []);
-  assert.ok(await exists(path.join(elsewhere, "ig_1.png")));
-});
+    const result = await pruneCodexCopies({ history: historyOf([entry]) });
+    assert.deepEqual(result.removed, []);
+    assert.ok(await exists(path.join(elsewhere, "ig_1.png")));
+  },
+);
 
 test("pixmith prune-codex-copies: reports what it did, and what a dry run would do", async () => {
   await fs.rm(generated, { recursive: true, force: true });
@@ -99,7 +111,10 @@ test("pixmith prune-codex-copies: reports what it did, and what a dry run would 
 
   let r = await run(["prune-codex-copies", "--dry-run"]);
   assert.equal(r.code, 0);
-  assert.match(r.text, /^Would remove 1 of Codex's duplicate image copy \(9 bytes\):\n {2}.*cli-a.*ig_1\.png\nRun again without --dry-run to delete them\.\nKept 1:\n {2}.*cli-b.*\(it differs from Pixmith's copy\)$/);
+  assert.match(
+    r.text,
+    /^Would remove 1 of Codex's duplicate image copy \(9 bytes\):\n {2}.*cli-a.*ig_1\.png\nRun again without --dry-run to delete them\.\nKept 1:\n {2}.*cli-b.*\(it differs from Pixmith's copy\)$/,
+  );
 
   r = await run(["prune-codex-copies"]);
   assert.match(r.text, /^Removed 1 of Codex's duplicate image copy, freeing 9 bytes\.\nKept 1:/);

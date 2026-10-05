@@ -17,7 +17,10 @@ const USAGE = `Usage:
 export const COMMANDS = new Set(["prune-codex-copies", "--help", "-h", "help", "--version", "-v"]);
 
 /** Run a command; returns the exit code. `out`/`err` default to stdout/stderr. */
-export async function runCli(args, { out = (s) => process.stdout.write(`${s}\n`), err = (s) => process.stderr.write(`${s}\n`), history } = {}) {
+export async function runCli(
+  args,
+  { out = (s) => process.stdout.write(`${s}\n`), err = (s) => process.stderr.write(`${s}\n`), history } = {},
+) {
   const [command, ...rest] = args;
   if (command === "--version" || command === "-v") {
     out(config.version);

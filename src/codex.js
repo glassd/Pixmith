@@ -40,7 +40,10 @@ export function cleanFilename(raw) {
   if (typeof raw !== "string") throw new PixmithError("bad_request", "`filename` must be a string.");
   const trimmed = raw.trim().replace(/\.png$/i, "");
   if (/[\\/]/.test(trimmed)) {
-    throw new PixmithError("bad_request", "`filename` is a file name, not a path; choose the folder with `output_dir`.");
+    throw new PixmithError(
+      "bad_request",
+      "`filename` is a file name, not a path; choose the folder with `output_dir`.",
+    );
   }
   let name = trimmed
     .normalize("NFKD")
@@ -51,7 +54,11 @@ export function cleanFilename(raw) {
     .replace(/^[.-]+|[.-]+$/g, "")
     .slice(0, 100)
     .replace(/[.-]+$/g, "");
-  if (!name) throw new PixmithError("bad_request", `\`filename\` "${raw}" has no usable characters (letters, digits, ".", "_", "-").`);
+  if (!name)
+    throw new PixmithError(
+      "bad_request",
+      `\`filename\` "${raw}" has no usable characters (letters, digits, ".", "_", "-").`,
+    );
   // Names Windows reserves for devices, with or without an extension.
   if (/^(con|prn|aux|nul|com\d|lpt\d)(\..*)?$/i.test(name)) name = `${name}-image`;
   return name;
@@ -95,7 +102,11 @@ function uniqueStamp() {
  * @param {string} [opts.promptFile]       File holding the ready-made image_gen prompt (see fastPathPrompt).
  * @param {"auto"|"opaque"|"transparent"} [opts.background]  "auto" leaves transparency to the prompt.
  */
-export function buildPrompt(prompt, sizeValue, { mode = "generate", imageCount = 0, promptFile = null, background = "auto" } = {}) {
+export function buildPrompt(
+  prompt,
+  sizeValue,
+  { mode = "generate", imageCount = 0, promptFile = null, background = "auto" } = {},
+) {
   // The agent's ONLY job is to call image_gen once. Pixmith locates the saved
   // PNG itself (image_gen writes to $CODEX_HOME/generated_images/<session>/),
   // so we explicitly forbid copying / shell / filesystem hunting — that agent
@@ -111,7 +122,9 @@ export function buildPrompt(prompt, sizeValue, { mode = "generate", imageCount =
   ];
 
   if (imageCount > 0) {
-    lines.push(`INPUT IMAGES: ${imageCount} image${imageCount === 1 ? " is" : "s are"} attached to this message and already visible to you.`);
+    lines.push(
+      `INPUT IMAGES: ${imageCount} image${imageCount === 1 ? " is" : "s are"} attached to this message and already visible to you.`,
+    );
     for (let i = 1; i <= imageCount; i += 1) {
       const role = editing && i === 1 ? "edit target" : "reference (style / composition / subject)";
       lines.push(`- Image ${i}: ${role}`);
@@ -190,7 +203,8 @@ const BACKGROUND_RULE = {
 const FAST_BACKGROUND = {
   auto: "Opaque background unless the description asks for transparency.",
   opaque: "Opaque background, with no transparency anywhere.",
-  transparent: "Transparent background: a PNG with an alpha channel, the subject alone with no backdrop, floor, scenery or cast shadow.",
+  transparent:
+    "Transparent background: a PNG with an alpha channel, the subject alone with no backdrop, floor, scenery or cast shadow.",
 };
 
 /**
@@ -202,7 +216,10 @@ const FAST_BACKGROUND = {
  */
 export function parseMarker(text) {
   if (!text) return null;
-  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
   const last = lines[lines.length - 1];
   if (!last) return null;
   if (last === "DONE") return { ok: true };
@@ -667,7 +684,10 @@ function isInside(target, root) {
  * output folder is always allowed. Symlinks are resolved first, so a link
  * inside an allowed folder cannot lead out of it.
  */
-export async function assertOutputDirAllowed(dir, { allowedDirs = config.allowedDirs, defaultOutputDir = config.defaultOutputDir } = {}) {
+export async function assertOutputDirAllowed(
+  dir,
+  { allowedDirs = config.allowedDirs, defaultOutputDir = config.defaultOutputDir } = {},
+) {
   if (!allowedDirs) return;
   const roots = [defaultOutputDir, ...allowedDirs];
   const target = await realPathLoose(dir);
@@ -694,7 +714,10 @@ export async function validateInputImages(images) {
     throw new PixmithError("bad_request", "Input images must be given as an array of absolute file paths.");
   }
   if (images.length > MAX_INPUT_IMAGES) {
-    throw new PixmithError("bad_request", `At most ${MAX_INPUT_IMAGES} input images are supported (got ${images.length}).`);
+    throw new PixmithError(
+      "bad_request",
+      `At most ${MAX_INPUT_IMAGES} input images are supported (got ${images.length}).`,
+    );
   }
   const out = [];
   for (const raw of images) {
@@ -792,7 +815,10 @@ export async function generateImage({
     throw new PixmithError("bad_request", `Unknown mode "${mode}" (expected "generate" or "edit").`);
   }
   if (!BACKGROUNDS.includes(background)) {
-    throw new PixmithError("bad_request", `\`background\` must be one of ${BACKGROUNDS.join(", ")} (got "${background}").`);
+    throw new PixmithError(
+      "bad_request",
+      `\`background\` must be one of ${BACKGROUNDS.join(", ")} (got "${background}").`,
+    );
   }
   const chosenName = cleanFilename(filename);
   if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
@@ -826,9 +852,7 @@ export async function generateImage({
   // A bare command name (e.g. "codex") is resolved on PATH by the OS, so we let
   // spawn try it and surface an ENOENT as a binary_missing error below.
   const looksLikePath =
-    path.isAbsolute(config.codexBin) ||
-    config.codexBin.includes("/") ||
-    config.codexBin.includes("\\");
+    path.isAbsolute(config.codexBin) || config.codexBin.includes("/") || config.codexBin.includes("\\");
   if (looksLikePath && !fssync.existsSync(config.codexBin)) {
     throw new PixmithError(
       "binary_missing",
@@ -859,7 +883,12 @@ export async function generateImage({
     }
   }
 
-  const fullPrompt = buildPrompt(prompt.trim(), sizeValue, { mode, imageCount: inputImages.length, promptFile, background });
+  const fullPrompt = buildPrompt(prompt.trim(), sizeValue, {
+    mode,
+    imageCount: inputImages.length,
+    promptFile,
+    background,
+  });
 
   // Snapshot generated images and rollout logs BEFORE the run. These are only
   // the fallback when Codex's session id can't be parsed from its output; the
@@ -929,7 +958,11 @@ export async function generateImage({
     // without it: stage updates are lost, but the banner/snapshot lookups below
     // still find the image.
     if (rejectedJsonFlag(run)) {
-      run = await runCodex(codexArgs.filter((a) => a !== "--json"), fullPrompt, runOpts);
+      run = await runCodex(
+        codexArgs.filter((a) => a !== "--json"),
+        fullPrompt,
+        runOpts,
+      );
     }
   } catch (err) {
     fs.unlink(lastMsgPath).catch(() => {}); // Codex never started, so nothing will read it
@@ -1019,7 +1052,9 @@ export async function generateImage({
           mode,
           prompt: prompt.trim(),
           image: path.basename(finalPath),
-          sha256: createHash("sha256").update(await fs.readFile(finalPath)).digest("hex"),
+          sha256: createHash("sha256")
+            .update(await fs.readFile(finalPath))
+            .digest("hex"),
           size,
           width: dims?.width ?? null,
           height: dims?.height ?? null,
@@ -1036,7 +1071,12 @@ export async function generateImage({
       // PIXMITH_CODEX_COPIES=remove: our copy is written and checked, so Codex's
       // duplicate under CODEX_HOME can go (Codex has exited by now).
       let codexHomeCopy = sourcePng ? path.resolve(sourcePng) : null;
-      if (codexHomeCopy && finalPath === ownCopy && config.codexCopies === "remove" && (await removeCodexCopy(codexHomeCopy))) {
+      if (
+        codexHomeCopy &&
+        finalPath === ownCopy &&
+        config.codexCopies === "remove" &&
+        (await removeCodexCopy(codexHomeCopy))
+      ) {
         codexHomeCopy = null;
       }
       return {
@@ -1255,7 +1295,17 @@ function runCodex(args, promptStdin, { onProgress, onEvent, signal, until } = {}
     // A cancel can land while generateImage is still preparing the run, before
     // the abort listener below exists; it would never fire, so check here.
     if (signal?.aborted) {
-      resolve({ stdout: "", stderr: "", code: null, timedOut: false, aborted: true, stoppedEarly: false, sessionId: null, agentText: "", eventErrors: [] });
+      resolve({
+        stdout: "",
+        stderr: "",
+        code: null,
+        timedOut: false,
+        aborted: true,
+        stoppedEarly: false,
+        sessionId: null,
+        agentText: "",
+        eventErrors: [],
+      });
       return;
     }
 

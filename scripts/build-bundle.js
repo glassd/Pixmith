@@ -12,7 +12,16 @@ import { fileURLToPath } from "node:url";
 const MCPB = "@anthropic-ai/mcpb@2.1.2";
 const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const out = path.join(root, "dist", "pixmith.mcpb");
-const shipped = ["manifest.json", "package.json", "package-lock.json", ".mcpbignore", "README.md", "LICENSE", "src", "assets/icon.png"];
+const shipped = [
+  "manifest.json",
+  "package.json",
+  "package-lock.json",
+  ".mcpbignore",
+  "README.md",
+  "LICENSE",
+  "src",
+  "assets/icon.png",
+];
 
 // npm and npx are .cmd shims on Windows, which only run through a shell.
 const run = (cmd, args, cwd) => execFileSync(cmd, args, { cwd, stdio: "inherit", shell: process.platform === "win32" });

@@ -167,7 +167,9 @@ export function limitReached(usage, now = Date.now()) {
 export function usageLines(usage, { warnPercent = 80, now = Date.now() } = {}) {
   const live = liveWindows(usage, now);
   if (!live.length) return [];
-  const parts = live.map((w) => `${Math.round(w.usedPercent)}% of the ${w.label} limit (resets ${formatReset(w.resetsAt, now)})`);
+  const parts = live.map(
+    (w) => `${Math.round(w.usedPercent)}% of the ${w.label} limit (resets ${formatReset(w.resetsAt, now)})`,
+  );
   const lines = [`Plan usage: ${parts.join(", ")}.`];
   const tight = live.filter((w) => w.usedPercent >= warnPercent).sort((a, b) => b.usedPercent - a.usedPercent)[0];
   if (tight) {
@@ -216,7 +218,10 @@ export function creditGate(usage, { policy = "ask", useCredits = false, now = Da
   const live = liveWindows(usage, now);
   const byUse = [...live].sort((a, b) => b.usedPercent - a.usedPercent || (b.resetsAt ?? 0) - (a.resetsAt ?? 0));
   const spent = byUse[0];
-  const state = spent.usedPercent >= 100 || usage.reachedType ? "is used up" : `is ${Math.round(spent.usedPercent)}% used, so this job could spill over into paid credits`;
+  const state =
+    spent.usedPercent >= 100 || usage.reachedType
+      ? "is used up"
+      : `is ${Math.round(spent.usedPercent)}% used, so this job could spill over into paid credits`;
   const head = `Your ChatGPT plan's ${spent.label} limit for Codex ${state}; it resets ${formatReset(spent.resetsAt, now)}.`;
 
   if (policy === "never") {

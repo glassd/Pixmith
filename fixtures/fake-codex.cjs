@@ -40,7 +40,11 @@ if (args[0] === "login" && args[1] === "status") {
     process.stderr.write("error: unrecognized subcommand 'status'\n");
     process.exit(2);
   }
-  const say = { chatgpt: "Logged in using ChatGPT", apikey: "Logged in using an API key - sk-proj-***ABCD", out: "Not logged in" }[login];
+  const say = {
+    chatgpt: "Logged in using ChatGPT",
+    apikey: "Logged in using an API key - sk-proj-***ABCD",
+    out: "Not logged in",
+  }[login];
   process.stderr.write(`${say}\n`);
   process.exit(login === "out" ? 1 : 0);
 }
@@ -93,7 +97,9 @@ process.stdin.on("end", () => {
   emit({ type: "item.completed", item: { id: "item_0", type: "agent_message", text: "Generating one image." } });
   if (mode === "refuse-split") {
     // The refusal arrives with a multi-byte character cut across two stdout chunks.
-    const line = Buffer.from(`${JSON.stringify({ type: "item.completed", item: { id: "item_1", type: "agent_message", text: "ERROR: refusé — 内容" } })}\n`);
+    const line = Buffer.from(
+      `${JSON.stringify({ type: "item.completed", item: { id: "item_1", type: "agent_message", text: "ERROR: refusé — 内容" } })}\n`,
+    );
     const cut = line.indexOf(Buffer.from("é")) + 1;
     process.stdout.write(line.subarray(0, cut));
     setTimeout(() => process.stdout.write(line.subarray(cut)), 100);

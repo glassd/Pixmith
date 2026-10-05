@@ -18,22 +18,13 @@
   "support": "https://github.com/glassd/Pixmith/issues",
   "icon": "assets/icon.png",
   "license": "MIT",
-  "keywords": [
-    "image",
-    "image-generation",
-    "gpt-image",
-    "codex",
-    "chatgpt",
-    "openai"
-  ],
+  "keywords": ["image", "image-generation", "gpt-image", "codex", "chatgpt", "openai"],
   "server": {
     "type": "node",
     "entry_point": "src/index.js",
     "mcp_config": {
       "command": "node",
-      "args": [
-        "${__dirname}/src/index.js"
-      ],
+      "args": ["${__dirname}/src/index.js"],
       "env": {
         "CODEX_BIN": "${user_config.codex_bin}",
         "PIXMITH_OUTPUT_DIR": "${user_config.output_dir}",
@@ -70,11 +61,7 @@
     }
   ],
   "compatibility": {
-    "platforms": [
-      "darwin",
-      "win32",
-      "linux"
-    ],
+    "platforms": ["darwin", "win32", "linux"],
     "runtimes": {
       "node": ">=18.0.0"
     }
