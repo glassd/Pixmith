@@ -104,6 +104,19 @@ function assertDeclared(data, schema) {
 
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * The i-th call to the fake generate(), once it has started. A job starts only
+ * after the tool has checked its arguments (input images, folders, plan usage),
+ * which can take a while on a busy machine, so wait for it rather than sleep.
+ */
+async function startedCall(t, i = 0) {
+  for (let waited = 0; t.calls.length <= i; waited += 5) {
+    if (waited >= 5000) throw new Error(`generate() call ${i + 1} never started`);
+    await tick(5);
+  }
+  return t.calls[i];
+}
+
 test("structured output: every tool declares an output schema", async () => {
   const t = await connect();
   try {
@@ -123,8 +136,7 @@ test("structured output: a finished image carries its path, size, inline image a
   const t = await connect({ pollWaitMs: 2000 });
   try {
     const pending = t.callTool("generate_image", { prompt: "a fox" });
-    await tick();
-    t.calls[0].resolve(t.result());
+    (await startedCall(t)).resolve(t.result());
     const res = await pending;
     const data = res.structuredContent;
     assertDeclared(data, JOB_OUTPUT_SCHEMA);
@@ -164,7 +176,7 @@ test("structured output: queued and running jobs, then collection with get_image
     assert.equal(second.status, "queued");
     assert.equal(second.queue_position, 1);
 
-    t.calls[0].resolve(t.result());
+    (await startedCall(t)).resolve(t.result());
     const done = (await t.callTool("get_image_result", { job_id: first.job_id })).structuredContent;
     assert.equal(done.status, "done");
     assert.equal(done.job_id, first.job_id);
@@ -177,8 +189,7 @@ test("structured output: an edit reports its source image", async () => {
   const t = await connect({ pollWaitMs: 2000 });
   try {
     const pending = t.callTool("edit_image", { image: t.png, prompt: "make it night" });
-    await tick();
-    t.calls[0].resolve(t.result({ inputImages: [t.png], metadataPath: null }));
+    (await startedCall(t)).resolve(t.result({ inputImages: [t.png], metadataPath: null }));
     const data = (await pending).structuredContent;
     assert.equal(data.metadata_path, undefined, "no sidecar, no field");
     assert.equal(data.mode, "edit");
@@ -230,7 +241,7 @@ test("structured output: failures carry a machine-readable kind and next step", 
 
     // A job that fails.
     const started = (await t.callTool("generate_image", { prompt: "a fox", wait: false })).structuredContent;
-    t.calls[0].reject(new PixmithError("usage_limit", "limit reached"));
+    (await startedCall(t)).reject(new PixmithError("usage_limit", "limit reached"));
     const failed = (await t.callTool("get_image_result", { job_id: started.job_id })).structuredContent;
     assert.equal(failed.status, "error");
     assert.equal(failed.job_id, started.job_id);
@@ -245,8 +256,7 @@ test("structured output: an image too big to inline is reported as not sent, and
   const t = await connect({ pollWaitMs: 2000, maxInlineBytes: 10, usage: null });
   try {
     const pending = t.callTool("generate_image", { prompt: "a fox" });
-    await tick();
-    t.calls[0].resolve(t.result());
+    (await startedCall(t)).resolve(t.result());
     const data = (await pending).structuredContent;
     assert.equal(data.inline_image, null);
     assert.equal(data.usage, null);
@@ -260,8 +270,7 @@ test("structured output: PIXMITH_STRUCTURED_OUTPUT=false leaves the tools as the
   try {
     assert.ok(t.tools.every((tool) => tool.outputSchema === undefined));
     const pending = t.callTool("generate_image", { prompt: "a fox" });
-    await tick();
-    t.calls[0].resolve(t.result());
+    (await startedCall(t)).resolve(t.result());
     const res = await pending;
     assert.equal(res.structuredContent, undefined);
     assert.match(res.content[0].text, /status: done/);
