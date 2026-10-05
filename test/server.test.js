@@ -347,3 +347,110 @@ test("get_image_result: a finished image can still be collected after a restart"
     await fs.rm(state, { recursive: true, force: true });
   }
 });
+
+/**
+ * Resolve (or reject, for an Error) the next jobs in order as they start. Jobs
+ * run one at a time, so each call appears only after the one before settles.
+ */
+async function settleInOrder(t, outcomes) {
+  for (const outcome of outcomes) {
+    const i = (t.settled = (t.settled ?? 0) + 1) - 1;
+    while (t.calls.length <= i) await tick(5);
+    if (outcome instanceof Error) t.calls[i].reject(outcome);
+    else t.calls[i].resolve(outcome);
+  }
+}
+
+test("variants: one call starts several jobs and returns them together, sharing the inline budget", async () => {
+  // The 64x48 PNG fits the budget alone, but not three times over.
+  const t = await connect({ pollWaitMs: 3000, maxInlineBytes: 20_000 });
+  try {
+    const pending = t.callTool("generate_image", { prompt: "a fox", variants: 3, filename: "fox" });
+    await settleInOrder(t, [t.result(), t.result(), t.result()]);
+    const res = await pending;
+    const data = res.structuredContent;
+    assertDeclared(data, JOB_OUTPUT_SCHEMA);
+    assert.equal(data.status, "done");
+    assert.equal(data.job_id, undefined);
+    assert.equal(data.job_ids.length, 3);
+    assert.deepEqual(data.variants.map((v) => [v.status, v.job_id]), data.job_ids.map((id) => ["done", id]));
+    assert.ok(data.variants.every((v) => v.inline_image.preview), "each variant's preview is shrunk to its slice");
+    assert.equal(data.usage.plan, "plus");
+    assert.deepEqual(t.calls.map((c) => c.args.filename), ["fox-1", "fox-2", "fox-3"]);
+
+    assert.equal(res.content.filter((c) => c.type === "image").length, 3);
+    const text = res.content[0].text;
+    assert.match(text, /^status: done\nVariants: 3 of 3 done\.$/m);
+    assert.match(text, /^Variant 2 of 3:$/m);
+    assert.equal(text.match(/Plan usage/g).length, 1, "usage is reported once for the batch");
+    assert.match(text, /To change a variant, call edit_image with its Path/);
+  } finally {
+    await t.close();
+  }
+});
+
+test("variants: partial results, failures, and collecting each variant on its own", async () => {
+  const t = await connect({ pollWaitMs: 3000 });
+  try {
+    const started = (await t.callTool("generate_image", { prompt: "a fox", variants: 2, wait: false })).structuredContent;
+    assert.equal(started.status, "running");
+    assert.deepEqual(started.variants.map((v) => v.status), ["running", "queued"]);
+
+    await settleInOrder(t, [new PixmithError("generation_failed", "refused"), t.result()]);
+    const second = (await t.callTool("get_image_result", { job_id: started.job_ids[1] })).structuredContent;
+    assert.equal(second.status, "done");
+
+    // A batch with one failure is still a success overall.
+    const mixed = t.callTool("generate_image", { prompt: "a fox", variants: 2 });
+    await settleInOrder(t, [new PixmithError("generation_failed", "refused"), t.result()]);
+    const res = await mixed;
+    assert.equal(res.isError, undefined);
+    assert.equal(res.structuredContent.status, "done");
+    assert.equal(res.structuredContent.variants[0].error.kind, "generation_failed");
+    assert.match(res.content[0].text, /^Variants: 1 of 2 done, 1 failed\.$/m);
+    assert.match(res.content[0].text, /\[generation_failed\] refused/);
+
+    // When every variant fails, the call is an error.
+    const failing = t.callTool("generate_image", { prompt: "a fox", variants: 2 });
+    await settleInOrder(t, [new PixmithError("timeout", "slow"), new PixmithError("timeout", "slow")]);
+    const allFailed = await failing;
+    assert.equal(allFailed.isError, true);
+    assert.equal(allFailed.structuredContent.status, "error");
+  } finally {
+    await t.close();
+  }
+});
+
+test("background: the option reaches the job, and a missing alpha channel is reported", async () => {
+  const t = await connect({ pollWaitMs: 2000, maxInlineBytes: 5000 });
+  try {
+    const pending = t.callTool("generate_image", { prompt: "a logo", background: "transparent" });
+    await settleInOrder(t, [t.result({ background: "transparent", hasAlpha: false })]);
+    const res = await pending;
+    assert.equal(t.calls[0].args.background, "transparent");
+    assert.equal(res.structuredContent.background, "transparent");
+    assert.equal(res.structuredContent.has_alpha, false);
+    assert.match(res.content[0].text, /transparency was asked for, but the PNG has no alpha channel/);
+
+    const ok = t.callTool("generate_image", { prompt: "a logo", background: "transparent" });
+    await settleInOrder(t, [t.result({ background: "transparent", hasAlpha: true })]);
+    const text = (await ok).content[0].text;
+    assert.match(text, /^Background: transparent \(the PNG has an alpha channel\)\.$/m);
+    assert.match(text, /Transparent areas show as white in it\./, "the JPEG preview cannot show transparency");
+  } finally {
+    await t.close();
+  }
+});
+
+test("generation options: bad values are refused before any job starts", async () => {
+  const t = await connect();
+  try {
+    for (const args of [{ variants: 5 }, { variants: 1.5 }, { background: "clear" }, { filename: "a/b" }, { filename: "!!!" }]) {
+      const res = await t.callTool("generate_image", { prompt: "a fox", ...args });
+      assert.equal(res.structuredContent.error.kind, "bad_request", JSON.stringify(args));
+    }
+    assert.equal(t.calls.length, 0);
+  } finally {
+    await t.close();
+  }
+});

@@ -196,6 +196,9 @@ total) rather than costing another round trip. Slower jobs fall back to a `job_i
 | `prompt`           | string   | ✅       | Text description of the image.                                                              |
 | `size`             | string   | ❌       | `auto`, a shortcut `1K`/`2K`/`4K`, or explicit `WIDTHxHEIGHT` (e.g. `1024x1024`, `1536x1024`, `3840x2160`). See [size limits](#size-limits). Default `1024x1024`. |
 | `reference_images` | string[] | ❌       | Up to 4 absolute paths of images (PNG, JPEG, WebP, GIF) to use as style, composition or subject references. |
+| `background`       | string   | ❌       | `auto` (default: transparent only if the prompt asks for it), `transparent` (a PNG with an alpha channel, the subject alone, for logos, icons and stickers) or `opaque`. See [backgrounds](#backgrounds). |
+| `variants`         | integer  | ❌       | 1–4, default 1. How many alternative images to make. Each is a full generation against the plan's usage. See [variants](#variants). |
+| `filename`         | string   | ❌       | File name for the PNG, without a folder (e.g. `hero-banner`). Cleaned to letters, digits, `.`, `_` and `-`; never overwrites, adding `-2`, `-3`… instead. Default: made from the prompt. |
 | `output_dir`       | string   | ❌       | Absolute directory to save into. Defaults to Pixmith's `images/` folder.                   |
 | `wait`             | boolean  | ❌       | Default `true`: wait up to the wait window and return the image directly. `false` returns the `job_id` at once — handy for starting several jobs back to back. |
 | `use_credits`      | boolean  | ❌       | Only matters once the plan limit is used up: confirms that you agreed to continue on paid credits. See [plan usage and credits](#plan-usage-and-credits). |
@@ -212,11 +215,32 @@ flight the new one is reported as `status: queued` with its position.
 | `prompt`           | string   | ✅       | What to change. Say what must stay the same, e.g. "make the sky stormy; keep everything else unchanged". |
 | `reference_images` | string[] | ❌       | Extra images to borrow style or content from (up to 4 images in total).     |
 | `size`             | string   | ❌       | As above. Defaults to `auto`, which keeps the source's aspect ratio.         |
-| `output_dir`, `wait`, `use_credits` | | ❌  | As for `generate_image`.                                                    |
+| `background`, `variants`, `filename`, `output_dir`, `wait`, `use_credits` | | ❌  | As for `generate_image`. |
 
 The source file is never modified; the edit is saved as a new PNG. Every finished result
 ends with the exact `edit_image` call that would refine it, so iterating is a one-liner
 for the assistant.
+
+### Backgrounds
+
+`background: "transparent"` asks for a PNG with an alpha channel: the subject alone, with
+no backdrop, floor or shadow. The image tool only takes a prompt, so this is an
+instruction to the model rather than a switch, and it does not always follow it. Pixmith
+therefore checks the PNG it gets back and says so: `Background: transparent (the PNG has
+an alpha channel).`, or a note that the background came out opaque, so you can retry
+(`has_alpha` in [structured results](#structured-results)). An inline JPEG preview cannot
+show transparency, so transparent areas look white there; the PNG on disk keeps them.
+`background: "opaque"` rules transparency out even when the prompt mentions it.
+
+### Variants
+
+`variants: 3` makes three alternative images from one prompt. Each is its own Codex
+session and job, so each counts toward the plan's usage like a separate request, and
+they run one after another unless `PIXMITH_MAX_CONCURRENT` is raised. The call waits for
+them within the usual window and returns all that are ready, each with its path and
+`job_id` and the inline images side by side (sharing the client's size limit, so the
+previews are smaller). Any still running are collected with `get_image_result` and their
+own `job_id`. With a `filename`, variants are numbered: `logo-1.png`, `logo-2.png`, …
 
 ### `get_image_result` — collect a slower job
 
@@ -293,6 +317,11 @@ script can read the outcome without parsing text. `generate_image`, `edit_image`
 - A failure has `status: "error"` and an `error` object with a machine-readable `kind`
   (`bad_request`, `usage_limit`, `credits_confirmation_needed`, `not_signed_in`,
   `timeout`, …), the `message`, and usually a `next_step`.
+- A finished image also reports the `background` asked for and `has_alpha`, whether the
+  PNG has an alpha channel.
+- A call with `variants` above 1 returns `job_ids` and a `variants` array holding each
+  variant's result in this same shape; the top-level `status` summarises them (`done` once
+  every variant has finished and at least one succeeded).
 - `cancel_image` returns the job's `status` after the call, `cancel_requested`, and the
   `previous_status` it had.
 

@@ -6,6 +6,7 @@ import path from "node:path";
 
 import {
   buildPrompt,
+  cleanFilename,
   cmdShellCommand,
   detectAuthFailure,
   detectImageType,
@@ -19,6 +20,7 @@ import {
   parseMarker,
   parseSessionId,
   PixmithError,
+  pngHasAlpha,
   readPngDimensions,
   rejectedJsonFlag,
   slugForFilename,
@@ -273,4 +275,65 @@ test("cmdShellCommand: quotes spaced arguments and refuses anything cmd.exe woul
       bad,
     );
   }
+});
+
+test("cleanFilename: keeps safe names, cleans the rest, refuses paths", () => {
+  assert.equal(cleanFilename(undefined), null);
+  assert.equal(cleanFilename("hero-banner"), "hero-banner");
+  assert.equal(cleanFilename("  My Logo! v2.PNG "), "My-Logo-v2");
+  assert.equal(cleanFilename("café_menu"), "cafe_menu");
+  assert.equal(cleanFilename("日本-logo"), "logo", "letters outside A-Z drop out");
+  assert.equal(cleanFilename("..hidden.."), "hidden");
+  assert.equal(cleanFilename("con"), "con-image", "a Windows device name is never used as is");
+  assert.equal(cleanFilename("x".repeat(150)).length, 100);
+  for (const bad of ["../escape", "a/b", "C:\\temp\\x", "!!!", "日本", "   ", 42]) {
+    assert.throws(() => cleanFilename(bad), (e) => e instanceof PixmithError && e.kind === "bad_request", String(bad));
+  }
+});
+
+test("pngHasAlpha: colour types with alpha, a tRNS chunk, and non-PNGs", async () => {
+  const { PNG } = await import("pngjs");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pixmith-alpha-"));
+  try {
+    const write = async (name, buf) => {
+      const f = path.join(dir, name);
+      await fs.writeFile(f, buf);
+      return f;
+    };
+    const img = new PNG({ width: 4, height: 4 });
+    img.data.fill(255);
+    assert.equal(await pngHasAlpha(await write("rgba.png", PNG.sync.write(img, { colorType: 6 }))), true);
+    assert.equal(await pngHasAlpha(await write("rgb.png", PNG.sync.write(img, { colorType: 2 }))), false);
+    assert.equal(await pngHasAlpha(await write("grey-alpha.png", PNG.sync.write(img, { colorType: 4 }))), true);
+
+    // An RGB image whose tRNS chunk marks one colour as transparent.
+    const rgb = PNG.sync.write(img, { colorType: 2 });
+    const idat = rgb.indexOf(Buffer.from("IDAT")) - 4;
+    const trns = Buffer.concat([Buffer.from([0, 0, 0, 6]), Buffer.from("tRNS"), Buffer.alloc(6), Buffer.alloc(4)]);
+    assert.equal(await pngHasAlpha(await write("trns.png", Buffer.concat([rgb.subarray(0, idat), trns, rgb.subarray(idat)]))), true);
+
+    assert.equal(await pngHasAlpha(await write("text.png", Buffer.from("not a png at all"))), null);
+    assert.equal(await pngHasAlpha(path.join(dir, "missing.png")), null);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("buildPrompt / fastPathPrompt: the background option", () => {
+  const auto = buildPrompt("a logo", "1024x1024");
+  assert.doesNotMatch(auto, /BACKGROUND:/);
+  assert.match(auto, /do NOT use transparency unless the image prompt explicitly asks for it/);
+
+  const transparent = buildPrompt("a logo", "1024x1024", { background: "transparent" });
+  assert.match(transparent, /BACKGROUND: transparent\. Output a PNG with an alpha channel/);
+  assert.match(transparent, /DO use a transparent background/);
+  assert.doesNotMatch(transparent, /do NOT use transparency/);
+
+  const opaque = buildPrompt("a logo", "1024x1024", { background: "opaque" });
+  assert.match(opaque, /BACKGROUND: opaque\./);
+  assert.match(opaque, /do NOT use transparency\./);
+
+  assert.match(fastPathPrompt("a logo", "auto"), /Opaque background unless the description asks for transparency\./);
+  assert.match(fastPathPrompt("a logo", "auto", "transparent"), /^Generate exactly ONE raster image\. Transparent background: a PNG with an alpha channel/);
+  assert.match(fastPathPrompt("a logo", "auto", "opaque"), /Opaque background, with no transparency anywhere\./);
 });
