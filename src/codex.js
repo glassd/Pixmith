@@ -800,6 +800,32 @@ function winQuote(s) {
   return /[\s"]/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s;
 }
 
+// cmd.exe expands %VAR% (and !VAR! under delayed expansion) even inside double
+// quotes, and treats & | < > ^ as operators outside them; a `.cmd` shim then
+// re-parses its arguments a second time. There is no escaping that survives
+// both passes reliably, so an argument carrying one of these is refused.
+const CMD_UNSAFE = /[%!^&|<>\r\n]/;
+
+/**
+ * Build the command line for running a `.cmd`/`.bat` Codex shim through
+ * cmd.exe. Paths such as `output_dir` come from the MCP client, so a value like
+ * `C:\out&calc` must never reach the shell: it is rejected with a bad_request.
+ */
+export function cmdShellCommand(bin, args) {
+  for (const arg of [bin, ...args]) {
+    const bad = String(arg).match(CMD_UNSAFE);
+    if (bad) {
+      const ch = JSON.stringify(bad[0]);
+      throw new PixmithError(
+        "bad_request",
+        `Cannot pass "${arg}" to Codex: it contains ${ch}, which cmd.exe would interpret when running the Codex shim ` +
+          `"${bin}". Use a path without % ! ^ & | < >, or set CODEX_BIN to a codex.exe so that no shell is involved.`,
+      );
+    }
+  }
+  return { command: winQuote(bin), args: args.map(winQuote) };
+}
+
 /**
  * Kill the Codex process and everything it spawned. On Windows a `.cmd` shim
  * runs under cmd.exe, so killing `child` alone would orphan the real codex
@@ -858,13 +884,19 @@ function runCodex(args, promptStdin, { onProgress, onEvent, signal, until } = {}
     const isWindows = process.platform === "win32";
     const needsShell = isWindows && !/\.exe$/i.test(config.codexBin);
 
+    // A cancel can land while generateImage is still preparing the run, before
+    // the abort listener below exists; it would never fire, so check here.
+    if (signal?.aborted) {
+      resolve({ stdout: "", stderr: "", code: null, timedOut: false, aborted: true, stoppedEarly: false, sessionId: null, agentText: "", eventErrors: [] });
+      return;
+    }
+
     let command = config.codexBin;
     let spawnArgs = args;
     const opts = { stdio: ["pipe", "pipe", "pipe"], env: process.env, windowsHide: true };
     if (needsShell) {
       opts.shell = true;
-      command = winQuote(config.codexBin);
-      spawnArgs = args.map(winQuote);
+      ({ command, args: spawnArgs } = cmdShellCommand(config.codexBin, args));
     }
 
     let child;

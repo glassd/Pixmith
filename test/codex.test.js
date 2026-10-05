@@ -6,6 +6,7 @@ import path from "node:path";
 
 import {
   buildPrompt,
+  cmdShellCommand,
   detectAuthFailure,
   detectImageType,
   detectUsageLimit,
@@ -256,5 +257,20 @@ test("isCompletePng: needs both the PNG signature and the IEND trailer", async (
     assert.equal(await isCompletePng(path.join(dir, "missing.png")), false);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("cmdShellCommand: quotes spaced arguments and refuses anything cmd.exe would interpret", () => {
+  const bin = "C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd";
+  const { command, args } = cmdShellCommand(bin, ["-C", "C:\\My Images (v2)", "-c", 'model_reasoning_effort="low"', "-"]);
+  assert.equal(command, bin);
+  assert.deepEqual(args, ["-C", '"C:\\My Images (v2)"', "-c", '"model_reasoning_effort=\\"low\\""', "-"]);
+
+  for (const bad of ["C:\\out&calc", "C:\\a|b", "C:\\a>b", "C:\\a<b", "C:\\a^b", "C:\\%TEMP%\\x", "C:\\a!b", "C:\\a\nb"]) {
+    assert.throws(
+      () => cmdShellCommand(bin, ["-C", bad]),
+      (e) => e instanceof PixmithError && e.kind === "bad_request" && e.message.includes("CODEX_BIN"),
+      bad,
+    );
   }
 });

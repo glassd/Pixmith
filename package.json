@@ -11,7 +11,7 @@
   "scripts": {
     "start": "node src/index.js",
     "smoke": "node scripts/smoke-test.js",
-    "test": "node --test test/"
+    "test": "node scripts/run-tests.js"
   },
   "engines": {
     "node": ">=18"

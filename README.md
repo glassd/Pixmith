@@ -168,11 +168,13 @@ node scripts/smoke-test.js "make the helmet gold" auto /abs/path/to/cat.png   # 
 A successful run prints JSON with the saved `path`. Images land in `./images/` by
 default.
 
-Unit tests (no Codex needed):
+Tests (no Codex needed — a fake Codex in `fixtures/` stands in for it):
 
 ```bash
 npm test
 ```
+
+CI runs the same suite on Linux, macOS and Windows for Node 18, 20, 22 and 24.
 
 ---
 
@@ -423,6 +425,11 @@ Or add the same `mcpServers` block above to a project-level `.mcp.json`.
   output directory. **On Windows there is no OS sandbox** (Codex's Seatbelt/Landlock
   sandboxing is Unix-only), so Pixmith runs Codex unsandboxed there by default. The
   agent is instructed not to run shell commands, but that is a prompt, not a policy.
+  Treat image prompts there as able to reach a shell, and only pass prompts you trust.
+- On Windows, an npm-installed `codex.cmd` has to be run through `cmd.exe`. Pixmith
+  refuses to pass it any path containing `% ! ^ & | < >` (characters `cmd.exe` would
+  interpret), so a crafted `output_dir` or image path cannot run commands. Point
+  `CODEX_BIN` at a `codex.exe` to avoid the shell, and the restriction, entirely.
 - Input images for `edit_image` / `reference_images` must be absolute paths to real image
   files (checked by magic bytes, max 20 MB). They are attached to the Codex prompt, so
   they are uploaded to OpenAI as part of the request; the files themselves are never

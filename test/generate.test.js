@@ -7,13 +7,14 @@ import { fileURLToPath } from "node:url";
 
 // End-to-end through generateImage against a fake Codex binary. config.js reads
 // the environment at import time, so it is set up before the dynamic import.
-const skip = process.platform === "win32" ? "the fake codex is a shebang script" : false;
+// On Windows the fake runs through a .cmd shim, the way an npm-installed codex.cmd does.
+const isWindows = process.platform === "win32";
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "pixmith-gen-"));
 const codexHome = path.join(root, "codex-home");
 const outDir = path.join(root, "out");
 await fs.mkdir(codexHome, { recursive: true });
-process.env.CODEX_BIN = fileURLToPath(new URL("../fixtures/fake-codex.cjs", import.meta.url));
+process.env.CODEX_BIN = fileURLToPath(new URL(`../fixtures/fake-codex.${isWindows ? "cmd" : "cjs"}`, import.meta.url));
 process.env.CODEX_HOME = codexHome;
 process.env.PIXMITH_OUTPUT_DIR = outDir;
 process.env.PIXMITH_BYPASS_SANDBOX = "false";
@@ -28,7 +29,7 @@ const reset = () => fs.rm(path.join(codexHome, "generated_images"), { recursive:
 
 test.after(() => fs.rm(root, { recursive: true, force: true }));
 
-test("generateImage: finds the session's PNG via JSON events and reports stages", { skip }, async () => {
+test("generateImage: finds the session's PNG via JSON events and reports stages", async () => {
   process.env.FAKE_MODE = "ok";
   const stages = [];
   const res = await generateImage({ prompt: "a fox", onStage: (s) => stages.push(s) });
@@ -57,7 +58,7 @@ test("generateImage: finds the session's PNG via JSON events and reports stages"
   await assert.rejects(fs.access(promptFile));
 });
 
-test("generateImage: stops Codex as soon as the finished PNG is on disk", { skip }, async () => {
+test("generateImage: stops Codex as soon as the finished PNG is on disk", async () => {
   process.env.FAKE_MODE = "early";
   await reset();
   const stages = [];
@@ -69,7 +70,7 @@ test("generateImage: stops Codex as soon as the finished PNG is on disk", { skip
   assert.deepEqual(stages, ["starting", "session_started", "saving"]);
 });
 
-test("generateImage: edit mode attaches each image with its own -i flag", { skip }, async () => {
+test("generateImage: edit mode attaches each image with its own -i flag", async () => {
   process.env.FAKE_MODE = "ok";
   await reset();
   const src = path.join(root, "src.png");
@@ -93,7 +94,7 @@ test("generateImage: edit mode attaches each image with its own -i flag", { skip
   assert.match(stdin, /- Image 1: edit target/);
 });
 
-test("generateImage: falls back to plain output when Codex rejects --json", { skip }, async () => {
+test("generateImage: falls back to plain output when Codex rejects --json", async () => {
   process.env.FAKE_MODE = "nojson";
   await reset();
   const res = await generateImage({ prompt: "a fox" });
@@ -101,7 +102,7 @@ test("generateImage: falls back to plain output when Codex rejects --json", { sk
   assert.ok(!(await lastCall()).args.includes("--json"));
 });
 
-test("generateImage: aborting kills Codex and reports cancelled", { skip }, async () => {
+test("generateImage: aborting kills Codex and reports cancelled", async () => {
   process.env.FAKE_MODE = "hang";
   await reset();
   const ac = new AbortController();
@@ -111,7 +112,42 @@ test("generateImage: aborting kills Codex and reports cancelled", { skip }, asyn
   assert.deepEqual(stages, ["starting", "session_started"]);
 });
 
-test("generateImage: classifies usage limits and refusals", { skip }, async () => {
+test("generateImage: a cancel that lands before Codex starts stops the job without running Codex", { timeout: 15_000 }, async () => {
+  process.env.FAKE_MODE = "hang";
+  await reset();
+  await fs.rm(path.join(codexHome, "last-call.json"), { force: true });
+  const ac = new AbortController();
+  // "starting" is reported after the pre-run snapshot, just before Codex is spawned.
+  const onStage = (s) => s === "starting" && ac.abort();
+  await assert.rejects(generateImage({ prompt: "a fox", signal: ac.signal, onStage }), (e) => e.kind === "cancelled");
+  await assert.rejects(fs.access(path.join(codexHome, "last-call.json")), "Codex was never launched");
+});
+
+test("generateImage: output paths with spaces and brackets reach Codex intact", async () => {
+  process.env.FAKE_MODE = "ok";
+  await reset();
+  const dir = path.join(root, "my images (v2)");
+  const res = await generateImage({ prompt: "a fox", outputDir: dir });
+  assert.equal(path.dirname(res.path), dir);
+  const { args } = await lastCall();
+  assert.equal(args[args.indexOf("-C") + 1], dir);
+});
+
+test("generateImage: refuses paths cmd.exe would interpret instead of running them", { skip: !isWindows && "only .cmd shims go through cmd.exe" }, async () => {
+  process.env.FAKE_MODE = "ok";
+  await reset();
+  await fs.rm(path.join(codexHome, "last-call.json"), { force: true });
+  for (const name of ["out&echo pwned", "100%PATH%", "a^b"]) {
+    await assert.rejects(
+      generateImage({ prompt: "a fox", outputDir: path.join(root, name) }),
+      (e) => e.kind === "bad_request" && /cmd\.exe/.test(e.message),
+      name,
+    );
+  }
+  await assert.rejects(fs.access(path.join(codexHome, "last-call.json")), "Codex was never launched");
+});
+
+test("generateImage: classifies usage limits and refusals", async () => {
   await reset();
   process.env.FAKE_MODE = "limit";
   await assert.rejects(generateImage({ prompt: "a fox" }), (e) => e.kind === "usage_limit" && /usage limit/.test(e.detail));
@@ -119,7 +155,7 @@ test("generateImage: classifies usage limits and refusals", { skip }, async () =
   await assert.rejects(generateImage({ prompt: "a fox" }), (e) => e.kind === "generation_failed" && /content policy/.test(e.message));
 });
 
-test("readUsage: newest session log wins, the job's own log is preferred, big logs are read from the tail", { skip }, async () => {
+test("readUsage: newest session log wins, the job's own log is preferred, big logs are read from the tail", async () => {
   const dir = path.join(codexHome, "sessions", "2026", "09", "21");
   await fs.mkdir(dir, { recursive: true });
   const entry = (used, ts) =>
@@ -152,7 +188,7 @@ test("readUsage: newest session log wins, the job's own log is preferred, big lo
   assert.equal(await readUsage(), null);
 });
 
-test("generateImage: an early-stopped edit still reports its session id and input images", { skip }, async () => {
+test("generateImage: an early-stopped edit still reports its session id and input images", async () => {
   // The usage line is looked up by session id, and edits are stopped early like
   // generations, so the id must survive that path.
   process.env.FAKE_MODE = "ok";
