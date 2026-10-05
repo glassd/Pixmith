@@ -1,0 +1,8 @@
+node_modules/
+dist/
+images/
+output/
+.pixmith/
+package-lock.json
+# Hand-aligned tables; reflowing them would only add noise.
+*.md

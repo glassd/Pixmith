@@ -160,8 +160,8 @@ settings, all optional:
 | Images at once | How many images may render at the same time (default 1). |
 | Delete Codex's duplicate copies | Off by default. When on, Codex's own copy of each image is deleted once Pixmith's is saved ([details](#codexs-duplicate-copies)). |
 
-To build the bundle yourself: `npm ci --omit=dev && npm run bundle` writes
-`dist/pixmith.mcpb`.
+To build the bundle yourself: `npm run bundle` writes `dist/pixmith.mcpb` (it installs
+only the runtime dependencies into a temporary folder, so dev tools never end up in it).
 
 ### Any MCP client: npm
 
@@ -224,6 +224,14 @@ npm test
 ```
 
 CI runs the same suite on Linux for Node 18, 20, 22 and 24, and on macOS and Windows for Node 24.
+
+Lint and formatting (ESLint for correctness, Prettier for layout; both need Node 20.19+):
+
+```bash
+npm run lint          # ESLint
+npm run format        # rewrite files with Prettier
+npm run format:check  # what CI checks
+```
 
 ---
 

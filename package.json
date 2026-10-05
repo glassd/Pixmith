@@ -32,7 +32,10 @@
     "start": "node src/index.js",
     "smoke": "node scripts/smoke-test.js",
     "test": "node scripts/run-tests.js",
-    "bundle": "npx --yes @anthropic-ai/mcpb@2.1.2 pack . dist/pixmith.mcpb"
+    "bundle": "node scripts/build-bundle.js",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "engines": {
     "node": ">=18"
@@ -42,5 +45,11 @@
     "jpeg-js": "^0.4.4",
     "pngjs": "^7.0.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.12.0",
+    "globals": "^17.13.0",
+    "prettier": "3.9.9"
+  }
 }

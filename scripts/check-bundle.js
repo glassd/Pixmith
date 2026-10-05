@@ -18,7 +18,9 @@ const required = [
   "node_modules/pngjs/package.json",
   "node_modules/jpeg-js/package.json",
 ];
-const forbidden = /^(test|fixtures|scripts|\.github|images|\.pixmith|dist)\/|^assets\/hero\.png$|^\.env/;
+// Repo-only files, and dev tools (a bundle must be built after `npm ci --omit=dev`).
+const forbidden =
+  /^(test|fixtures|scripts|\.github|images|\.pixmith|dist)\/|^assets\/hero\.png$|^\.env|^node_modules\/(eslint|@eslint|prettier|globals)\//;
 
 const missing = required.filter((f) => !entries.has(f));
 const extra = [...entries].filter((f) => forbidden.test(f));

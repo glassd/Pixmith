@@ -99,7 +99,7 @@ test("pixmith prune-codex-copies: reports what it did, and what a dry run would 
 
   let r = await run(["prune-codex-copies", "--dry-run"]);
   assert.equal(r.code, 0);
-  assert.match(r.text, /^Would remove 1 of Codex's duplicate image copy \(9 bytes\):\n  .*cli-a.*ig_1\.png\nRun again without --dry-run to delete them\.\nKept 1:\n  .*cli-b.*\(it differs from Pixmith's copy\)$/);
+  assert.match(r.text, /^Would remove 1 of Codex's duplicate image copy \(9 bytes\):\n {2}.*cli-a.*ig_1\.png\nRun again without --dry-run to delete them\.\nKept 1:\n {2}.*cli-b.*\(it differs from Pixmith's copy\)$/);
 
   r = await run(["prune-codex-copies"]);
   assert.match(r.text, /^Removed 1 of Codex's duplicate image copy, freeing 9 bytes\.\nKept 1:/);
