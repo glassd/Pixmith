@@ -232,6 +232,10 @@ export const config = {
   // path, job_id, usage...) next to the text. Turn off for a client that
   // mishandles structured tool results.
   structuredOutput: envBool("PIXMITH_STRUCTURED_OUTPUT", true),
+
+  // Write <image>.json beside every PNG: the prompt, sizes, source and
+  // reference images, Codex session and a SHA-256 of the image.
+  writeMetadata: envBool("PIXMITH_METADATA", true),
   maxInlineBytes: envInt("PIXMITH_MAX_INLINE_BYTES", 680 * 1024),
 };
 
