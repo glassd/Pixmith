@@ -92,7 +92,7 @@ export class JobManager {
     this.running = 0;
   }
 
-  create({ prompt, size, outputDir, images = [], mode = "generate" }) {
+  create({ prompt, size, outputDir, images = [], mode = "generate", background = "auto", filename = null }) {
     this.prune();
     let resolveSettled;
     const settled = new Promise((r) => {
@@ -105,6 +105,8 @@ export class JobManager {
       size,
       outputDir,
       images,
+      background,
+      filename,
       status: "queued",
       stage: null,
       queuedAt: Date.now(),
@@ -234,6 +236,8 @@ export class JobManager {
             outputDir: job.outputDir,
             images: job.images,
             mode: job.mode,
+            background: job.background,
+            filename: job.filename,
             signal: job.controller.signal,
             onStage: (stage) => {
               job.stage = stage;

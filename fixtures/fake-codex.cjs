@@ -6,11 +6,13 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const SESSION = "0a0b0c0d-1111-2222-3333-444455556666";
+// FAKE_COLOR_TYPE sets the PNG's colour type: 6 (RGBA) has an alpha channel, 0 (default) does not.
 const PNG = Buffer.concat([
   Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]),
   Buffer.from("IHDR"),
   Buffer.from([0, 0, 4, 0, 0, 0, 3, 0]), // 1024 x 768
-  Buffer.alloc(64, 0),
+  Buffer.from([8, Number(process.env.FAKE_COLOR_TYPE || 0)]), // bit depth, colour type
+  Buffer.alloc(62, 0),
 ]);
 
 const args = process.argv.slice(2);

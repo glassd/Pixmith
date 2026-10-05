@@ -277,6 +277,8 @@ test("generateImage: writes a metadata sidecar beside the PNG", async () => {
       height: 768,
       requested_size: "1008x1008",
       size_note: "rounded 1000x1000 to 1008x1008 (each edge must be a multiple of 16)",
+      background: "auto",
+      has_alpha: false,
       reference_images: [],
       codex_session_id: "0a0b0c0d-1111-2222-3333-444455556666",
       duration_ms: undefined,
@@ -325,4 +327,48 @@ test("writeMetadata: never overwrites, and a failure returns null instead of thr
   assert.equal(await writeMetadata(png, { prompt: "x" }), null);
   assert.equal(await fs.readFile(json, "utf8"), "keep me");
   assert.equal(await writeMetadata(path.join(root, "no-such-dir", "a.png"), { prompt: "x" }), null);
+});
+
+test("generateImage: a transparent background is asked for, and the PNG's alpha channel is reported", async () => {
+  process.env.FAKE_MODE = "ok";
+  await reset();
+  const plain = await generateImage({ prompt: "a logo", background: "transparent" });
+  assert.equal(plain.background, "transparent");
+  assert.equal(plain.hasAlpha, false, "the fake's default PNG has no alpha channel");
+  const { stdin, promptFileText } = await lastCall();
+  assert.match(stdin, /BACKGROUND: transparent/);
+  assert.match(promptFileText, /Transparent background/);
+  assert.equal(JSON.parse(await fs.readFile(plain.metadataPath, "utf8")).has_alpha, false);
+
+  process.env.FAKE_COLOR_TYPE = "6";
+  try {
+    await reset();
+    const rgba = await generateImage({ prompt: "a logo", background: "transparent" });
+    assert.equal(rgba.hasAlpha, true);
+  } finally {
+    delete process.env.FAKE_COLOR_TYPE;
+  }
+  await assert.rejects(generateImage({ prompt: "a logo", background: "clear" }), (e) => e.kind === "bad_request");
+});
+
+test("generateImage: a chosen filename is used, and never overwrites", async () => {
+  process.env.FAKE_MODE = "ok";
+  const dir = path.join(root, "named");
+  await reset();
+  const first = await generateImage({ prompt: "a logo", outputDir: dir, filename: "Brand Logo" });
+  assert.equal(first.path, path.join(dir, "Brand-Logo.png"));
+  assert.equal(first.metadataPath, path.join(dir, "Brand-Logo.json"));
+
+  await reset();
+  const second = await generateImage({ prompt: "a logo", outputDir: dir, filename: "Brand Logo.png" });
+  assert.equal(second.path, path.join(dir, "Brand-Logo-2.png"));
+
+  // A name whose sidecar is already taken is skipped too, so the pair always matches.
+  await fs.writeFile(path.join(dir, "Brand-Logo-3.json"), "{}");
+  await reset();
+  const third = await generateImage({ prompt: "a logo", outputDir: dir, filename: "Brand Logo" });
+  assert.equal(third.path, path.join(dir, "Brand-Logo-4.png"));
+  assert.notDeepEqual(await fs.readFile(first.path), Buffer.alloc(0), "the first file is untouched");
+
+  await assert.rejects(generateImage({ prompt: "a logo", outputDir: dir, filename: "../escape" }), (e) => e.kind === "bad_request");
 });

@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { normalizeSize } from "./config.js";
-import { PixmithError, STAGE_LABELS, validateInputImages, MAX_INPUT_IMAGES } from "./codex.js";
+import { BACKGROUNDS, PixmithError, STAGE_LABELS, cleanFilename, validateInputImages, MAX_INPUT_IMAGES } from "./codex.js";
 import { jobFromEntry } from "./history.js";
 import { makeInlineImage } from "./preview.js";
 import { creditGate, readUsage as readCodexUsage, usageLines, usageSummary } from "./usage.js";
@@ -70,40 +70,63 @@ const USAGE_SCHEMA = {
 
 const STATUSES = ["queued", "running", "done", "cancelled", "error"];
 
+/** The most variants one call may ask for. Each is a full generation. */
+export const MAX_VARIANTS = 4;
+
+/** Fields describing one job, shared by single results and each entry of `variants`. */
+const JOB_PROPERTIES = {
+  status: { type: "string", enum: STATUSES },
+  job_id: { type: "string", description: "Absent only when the call failed before a job was created." },
+  mode: { type: "string", enum: ["generate", "edit"] },
+  stage: { type: "string", description: "What a queued or running job is doing." },
+  queue_position: { type: "integer", description: "1-based position of a queued job." },
+  elapsed_seconds: { type: "integer" },
+  expected_seconds: { type: "integer", description: "Typical total time for this kind of job, from recent history." },
+  path: { type: "string", description: "Absolute path of the saved PNG." },
+  size: { type: "string", description: 'Actual "WIDTHxHEIGHT" of the PNG.' },
+  width: { type: ["integer", "null"] },
+  height: { type: ["integer", "null"] },
+  requested_size: { type: "string" },
+  size_note: { type: "string", description: "How the requested size was adjusted, if it was." },
+  bytes: { type: "integer" },
+  source_image: { type: "string", description: "The image an edit was made from." },
+  codex_copy: { type: "string", description: "Codex's own copy of the PNG under CODEX_HOME." },
+  metadata_path: { type: "string", description: "The JSON sidecar beside the PNG recording its prompt, sizes and sources." },
+  inline_image: {
+    type: ["object", "null"],
+    description: "The image sent in `content`; null when none was sent.",
+    properties: {
+      mime_type: { type: "string" },
+      width: { type: ["integer", "null"] },
+      height: { type: ["integer", "null"] },
+      preview: { type: "boolean", description: "True when it is a reduced JPEG preview, not the PNG itself." },
+    },
+    required: ["mime_type", "width", "height", "preview"],
+  },
+  background: { type: "string", enum: BACKGROUNDS, description: "The background that was asked for." },
+  has_alpha: {
+    type: ["boolean", "null"],
+    description: "Whether the PNG has an alpha channel (can be transparent); null when unknown.",
+  },
+  usage: USAGE_SCHEMA,
+  error: ERROR_SCHEMA,
+};
+
 /** Output of generate_image, edit_image and get_image_result. */
 export const JOB_OUTPUT_SCHEMA = {
   type: "object",
   properties: {
-    status: { type: "string", enum: STATUSES },
-    job_id: { type: "string", description: "Absent only when the call failed before a job was created." },
-    mode: { type: "string", enum: ["generate", "edit"] },
-    stage: { type: "string", description: "What a queued or running job is doing." },
-    queue_position: { type: "integer", description: "1-based position of a queued job." },
-    elapsed_seconds: { type: "integer" },
-    expected_seconds: { type: "integer", description: "Typical total time for this kind of job, from recent history." },
-    path: { type: "string", description: "Absolute path of the saved PNG." },
-    size: { type: "string", description: 'Actual "WIDTHxHEIGHT" of the PNG.' },
-    width: { type: ["integer", "null"] },
-    height: { type: ["integer", "null"] },
-    requested_size: { type: "string" },
-    size_note: { type: "string", description: "How the requested size was adjusted, if it was." },
-    bytes: { type: "integer" },
-    source_image: { type: "string", description: "The image an edit was made from." },
-    codex_copy: { type: "string", description: "Codex's own copy of the PNG under CODEX_HOME." },
-    metadata_path: { type: "string", description: "The JSON sidecar beside the PNG recording its prompt, sizes and sources." },
-    inline_image: {
-      type: ["object", "null"],
-      description: "The image sent in `content`; null when none was sent.",
-      properties: {
-        mime_type: { type: "string" },
-        width: { type: ["integer", "null"] },
-        height: { type: ["integer", "null"] },
-        preview: { type: "boolean", description: "True when it is a reduced JPEG preview, not the PNG itself." },
-      },
-      required: ["mime_type", "width", "height", "preview"],
+    ...JOB_PROPERTIES,
+    job_ids: {
+      type: "array",
+      items: { type: "string" },
+      description: "With variants > 1: every variant's job_id, in order. Each is collected with get_image_result on its own.",
     },
-    usage: USAGE_SCHEMA,
-    error: ERROR_SCHEMA,
+    variants: {
+      type: "array",
+      items: { type: "object", properties: JOB_PROPERTIES, required: ["status"] },
+      description: "With variants > 1: each variant's result, in order. The top-level status then summarises them.",
+    },
   },
   required: ["status"],
 };
@@ -206,6 +229,29 @@ export function createTools({ jobs, config, readUsage = readCodexUsage, history 
       "Optional, default false. Only relevant once the ChatGPT plan's Codex limit is used up: Pixmith then refuses to start a job " +
       "and explains why. Set true ONLY after the user has explicitly agreed to continue on paid credits.",
   };
+  const backgroundProperty = {
+    type: "string",
+    enum: BACKGROUNDS,
+    description:
+      'Optional, default "auto" (transparent only when the prompt asks for it). "transparent" asks for a PNG with an alpha ' +
+      "channel, the subject alone with no backdrop (for a logo, icon or sticker); the model does not always manage it, and the " +
+      'result says whether the PNG really has one. "opaque" rules transparency out.',
+  };
+  const filenameProperty = {
+    type: "string",
+    description:
+      'Optional. File name for the PNG, without a folder (e.g. "hero-banner"); default: made from the prompt. Cleaned to ' +
+      'letters, digits, ".", "_" and "-". An existing file is never overwritten: "-2", "-3"... is added instead.',
+  };
+  const variantsProperty = {
+    type: "integer",
+    minimum: 1,
+    maximum: MAX_VARIANTS,
+    description:
+      `Optional, default 1. How many alternative images to make (1-${MAX_VARIANTS}). Each is a separate generation that ` +
+      "counts toward the ChatGPT plan's usage, and they run one after another unless PIXMITH_MAX_CONCURRENT is raised, so " +
+      "only ask for more than one when the user wants options to choose from. Each variant gets its own job_id.",
+  };
   const referenceProperty = {
     type: "array",
     items: { type: "string" },
@@ -229,6 +275,9 @@ export function createTools({ jobs, config, readUsage = readCodexUsage, history 
         prompt: { type: "string", description: "Required. Text description of the image to generate." },
         size: sizeProperty(false),
         reference_images: referenceProperty,
+        background: backgroundProperty,
+        variants: variantsProperty,
+        filename: filenameProperty,
         output_dir: outputDirProperty,
         wait: waitProperty,
         use_credits: creditsProperty,
@@ -260,6 +309,9 @@ export function createTools({ jobs, config, readUsage = readCodexUsage, history 
         },
         reference_images: referenceProperty,
         size: sizeProperty(true),
+        background: backgroundProperty,
+        variants: variantsProperty,
+        filename: filenameProperty,
         output_dir: outputDirProperty,
         wait: waitProperty,
         use_credits: creditsProperty,
@@ -349,7 +401,24 @@ export function createTools({ jobs, config, readUsage = readCodexUsage, history 
     if (args.use_credits != null && typeof args.use_credits !== "boolean") {
       throw new PixmithError("bad_request", "`use_credits` must be true or false.");
     }
-    return { prompt: prompt.trim(), size: requestedSize, sizeNote: sizeCheck.note, outputDir, wait: args.wait !== false };
+    const background = args.background ?? "auto";
+    if (!BACKGROUNDS.includes(background)) {
+      throw new PixmithError("bad_request", `\`background\` must be one of ${BACKGROUNDS.join(", ")}.`);
+    }
+    const variants = args.variants ?? 1;
+    if (!Number.isInteger(variants) || variants < 1 || variants > MAX_VARIANTS) {
+      throw new PixmithError("bad_request", `\`variants\` must be a whole number from 1 to ${MAX_VARIANTS}.`);
+    }
+    return {
+      prompt: prompt.trim(),
+      size: requestedSize,
+      sizeNote: sizeCheck.note,
+      outputDir,
+      background,
+      variants,
+      filename: cleanFilename(args.filename),
+      wait: args.wait !== false,
+    };
   }
 
   async function start(args, request, extra, { forEdit }) {
@@ -376,17 +445,24 @@ export function createTools({ jobs, config, readUsage = readCodexUsage, history 
       throw new PixmithError(gate.action === "block" ? "usage_limit" : "credits_confirmation_needed", gate.message);
     }
 
-    const job = jobs.create({
-      prompt: common.prompt,
-      size: common.size,
-      outputDir: common.outputDir,
-      images,
-      mode: forEdit ? "edit" : "generate",
-    });
-    job.sizeNote = common.sizeNote;
+    // Variants are independent jobs; with a chosen filename they are numbered.
+    const list = [];
+    for (let i = 1; i <= common.variants; i += 1) {
+      const job = jobs.create({
+        prompt: common.prompt,
+        size: common.size,
+        outputDir: common.outputDir,
+        images,
+        mode: forEdit ? "edit" : "generate",
+        background: common.background,
+        filename: common.filename && common.variants > 1 ? `${common.filename}-${i}` : common.filename,
+      });
+      job.sizeNote = common.sizeNote;
+      list.push(job);
+    }
 
-    if (common.wait) await waitWithProgress(job, request, extra);
-    return report(job, { justStarted: true });
+    if (common.wait) await waitWithProgress(list, request, extra);
+    return list.length === 1 ? report(list[0], { justStarted: true }) : batchReport(list, { justStarted: true });
   }
 
   // ---- waiting + progress -----------------------------------------------------------
@@ -396,24 +472,33 @@ export function createTools({ jobs, config, readUsage = readCodexUsage, history 
     return STAGE_LABELS[job.stage] || "Working";
   }
 
-  /** Long-poll a job for at most config.pollWaitMs, emitting progress notifications as it goes. */
-  async function waitWithProgress(job, request, extra) {
-    if (!jobs.isActive(job)) return;
+  /**
+   * Long-poll one job, or several sharing one window, for at most
+   * config.pollWaitMs in total, emitting progress notifications as they go.
+   */
+  async function waitWithProgress(jobOrList, request, extra) {
+    const list = [].concat(jobOrList);
+    if (!list.some((j) => jobs.isActive(j))) return;
     const progressToken = request?.params?._meta?.progressToken;
     const canNotify = progressToken !== undefined && typeof extra?.sendNotification === "function";
 
     let lastProgress = 0;
     let lastMessage = "";
     const tick = () => {
-      if (!canNotify || !jobs.isActive(job)) return;
+      const active = list.filter((j) => jobs.isActive(j));
+      if (!canNotify || !active.length) return;
+      const job = active[0];
       const elapsed = secs(jobs.elapsedMs(job));
       const eta = secs(jobs.etaMs(job));
-      const message =
+      let message =
         job.status === "queued"
           ? `${stageText(job)} — waiting ${elapsed}s for a free slot`
           : elapsed > eta
             ? `${stageText(job)} — ${elapsed}s, longer than the usual ~${eta}s`
             : `${stageText(job)} — ${elapsed}s of ~${eta}s`;
+      if (list.length > 1) {
+        message = `${list.length - active.length} of ${list.length} variants done. Variant ${list.indexOf(job) + 1}: ${message}`;
+      }
       // `progress` must rise on every notification; `total` is only an estimate,
       // so keep it ahead of `progress` when a job overruns.
       const progress = Math.max(lastProgress + 1, job.status === "queued" ? 0 : elapsed);
@@ -431,12 +516,18 @@ export function createTools({ jobs, config, readUsage = readCodexUsage, history 
     tick();
     const heartbeat = setInterval(tick, 3000);
     try {
-      await jobs.wait(job, config.pollWaitMs, extra?.signal);
+      const deadline = Date.now() + config.pollWaitMs;
+      for (const job of list) {
+        if (extra?.signal?.aborted) break;
+        await jobs.wait(job, deadline - Date.now(), extra?.signal);
+      }
       // Codex has already finished and the image is only being collected: a
       // short grace here returns the image now instead of costing the client
       // another round trip for the sake of a second or two.
-      if (jobs.isActive(job) && FINAL_STAGES.has(job.stage) && !extra?.signal?.aborted) {
-        await jobs.wait(job, config.finishGraceMs ?? 0, extra?.signal);
+      const graceEnd = Date.now() + (config.finishGraceMs ?? 0);
+      for (const job of list) {
+        if (!jobs.isActive(job) || !FINAL_STAGES.has(job.stage) || extra?.signal?.aborted) continue;
+        await jobs.wait(job, graceEnd - Date.now(), extra?.signal);
       }
     } finally {
       clearInterval(heartbeat);
@@ -445,20 +536,31 @@ export function createTools({ jobs, config, readUsage = readCodexUsage, history 
 
   // ---- responses ----------------------------------------------------------------------
 
-  async function report(job, { justStarted = false } = {}) {
-    if (job.status === "done") return doneResult(job);
+  /**
+   * One job's share of a result. `head` and `tail` are text lines around where
+   * the usage lines go, `footer` is the closing instruction, `image` the inline
+   * content item, `data` its structuredContent, and `usage` (finished jobs) the
+   * plan-usage report. A failed job carries `errorText` instead.
+   */
+  async function jobParts(job, { justStarted = false, inlineBudget = config.maxInlineBytes } = {}) {
+    const base = { tail: [], footer: null, image: null, usage: null };
+    if (job.status === "done") return doneParts(job, inlineBudget);
 
-    if (job.status === "error") return withData(errorResult(formatError(job.error)), errorData(job.error, job));
-
-    if (job.status === "cancelled") {
-      return withData(text([`status: cancelled`, `job_id: ${job.id}`, "", "This job was cancelled. No image was produced."]), {
-        status: "cancelled",
-        job_id: job.id,
-        mode: job.mode,
-      });
+    if (job.status === "error") {
+      return { ...base, status: "error", head: [`status: error`, `job_id: ${job.id}`], errorText: formatError(job.error), data: errorData(job.error, job) };
     }
 
-    const lines = [`status: ${job.status}`, `job_id: ${job.id}`, `stage: ${stageText(job)}`];
+    if (job.status === "cancelled") {
+      return {
+        ...base,
+        status: "cancelled",
+        head: [`status: cancelled`, `job_id: ${job.id}`],
+        footer: "This job was cancelled. No image was produced.",
+        data: { status: "cancelled", job_id: job.id, mode: job.mode },
+      };
+    }
+
+    const head = [`status: ${job.status}`, `job_id: ${job.id}`, `stage: ${stageText(job)}`];
     const typicalSecs = secs(jobs.etaMs(job));
     const elapsed = secs(jobs.elapsedMs(job));
     const data = {
@@ -468,27 +570,38 @@ export function createTools({ jobs, config, readUsage = readCodexUsage, history 
       stage: stageText(job),
       elapsed_seconds: elapsed,
       expected_seconds: typicalSecs,
+      background: job.background,
     };
     if (job.status === "queued") {
       data.queue_position = jobs.queuePosition(job.id);
-      lines.push(`queue_position: ${data.queue_position} (max ${jobs.maxConcurrent} at once; each takes ~${typicalSecs}s)`);
+      head.push(`queue_position: ${data.queue_position} (max ${jobs.maxConcurrent} at once; each takes ~${typicalSecs}s)`);
     } else {
       const outlook = elapsed > typicalSecs ? "taking longer than usual" : `about ${secs(jobs.remainingMs(job))}s left`;
-      lines.push(`elapsed: ${elapsed}s (typical: ~${typicalSecs}s, ${outlook})`);
+      head.push(`elapsed: ${elapsed}s (typical: ~${typicalSecs}s, ${outlook})`);
     }
     if (justStarted && job.sizeNote) {
       data.size_note = job.sizeNote;
-      lines.push(`size_note: ${job.sizeNote}`);
+      head.push(`size_note: ${job.sizeNote}`);
     }
-    lines.push(
-      "",
+    const footer =
       `${justStarted ? "The job is underway" : "Still working"}. Call get_image_result with this job_id to fetch the image ` +
-        "(repeat while status is queued/running). Call cancel_image to stop it.",
-    );
-    return withData(text(lines), data);
+      "(repeat while status is queued/running). Call cancel_image to stop it.";
+    return { ...base, status: job.status, head, footer, data };
   }
 
-  async function doneResult(job) {
+  /** What the result says about the background, if anything worth saying. */
+  function backgroundLine(result) {
+    if (result.background === "transparent") {
+      if (result.hasAlpha === true) return "Background: transparent (the PNG has an alpha channel).";
+      if (result.hasAlpha === false) {
+        return "Background: transparency was asked for, but the PNG has no alpha channel, so its background is opaque. Retry, or remove the background with another tool.";
+      }
+      return null;
+    }
+    return result.hasAlpha === true ? "Background: the PNG has an alpha channel (it can be transparent)." : null;
+  }
+
+  async function doneParts(job, inlineBudget) {
     const result = job.result;
     // Report the PNG's real dimensions; gpt-image-2 does not always return
     // exactly the requested size, and "auto" has no fixed size at all.
@@ -496,35 +609,40 @@ export function createTools({ jobs, config, readUsage = readCodexUsage, history 
     if (result.requestedSize && result.requestedSize !== result.size) sizeParts.push(`requested ${result.requestedSize}`);
     if (result.sizeNote) sizeParts.push(result.sizeNote);
     const verb = job.mode === "edit" ? "edited" : "generated";
-    const lines = [
+    const head = [
       `status: done`,
       `Image ${verb} in ${secs(jobs.elapsedMs(job))}s and saved.`,
       `Path: ${result.path}`,
       `Size: ${result.size}${sizeParts.length ? ` (${sizeParts.join("; ")})` : ""}`,
       `Bytes: ${result.bytes}`,
     ];
-    if (job.mode === "edit" && result.inputImages?.length) lines.push(`Edited from: ${result.inputImages[0]}`);
-    if (result.codexHomeCopy && result.codexHomeCopy !== result.path) lines.push(`Codex copy: ${result.codexHomeCopy}`);
-    if (result.metadataPath) lines.push(`Metadata: ${result.metadataPath}`);
+    const bg = backgroundLine(result);
+    if (bg) head.push(bg);
+    if (job.mode === "edit" && result.inputImages?.length) head.push(`Edited from: ${result.inputImages[0]}`);
+    if (result.codexHomeCopy && result.codexHomeCopy !== result.path) head.push(`Codex copy: ${result.codexHomeCopy}`);
+    if (result.metadataPath) head.push(`Metadata: ${result.metadataPath}`);
     // Read once per job: the figure describes the moment the job finished, and a
-    // result can be fetched several times.
-    // A job restored from the history describes the past; today's usage would mislead.
+    // result can be fetched several times. A job restored from the history
+    // describes the past, where today's usage would mislead.
     if (job.restored) job.usageReport ??= { lines: [], summary: null };
     if (!job.usageReport) {
       const usage = await safeUsage({ sessionId: result.sessionId });
       const opts = { warnPercent: config.usageWarnPercent };
       job.usageReport = { lines: usageLines(usage, opts), summary: usageSummary(usage, opts) };
     }
-    lines.push(...job.usageReport.lines);
-    if (config.codexBinNote) lines.push(`Note: ${config.codexBinNote}`);
-    lines.push(`job_id: ${job.id}`, "", `To change this image, call edit_image with image="${result.path}" and describe the change.`);
+    const tail = [];
+    if (config.codexBinNote) tail.push(`Note: ${config.codexBinNote}`);
+    tail.push(`job_id: ${job.id}`);
 
     // Inline image. MCP clients cap the size of a tool result (Claude Desktop:
     // 1 MB), so a PNG over the budget travels as a JPEG preview while the
-    // full-quality PNG stays at the path above. Built once per job.
-    if (config.returnImage && job.inline === undefined) {
+    // full-quality PNG stays at the path above. Built once per job and budget
+    // (variants share one result, so each gets a slice of the budget).
+    if (config.returnImage && job.inlineBudget !== inlineBudget) {
+      job.inlineBudget = inlineBudget;
       try {
-        const inline = await makeInlineImage(result.path, config.maxInlineBytes);
+        const inline = await makeInlineImage(result.path, inlineBudget);
+        const flattened = inline?.preview && result.hasAlpha ? " Transparent areas show as white in it." : "";
         job.inline = inline
           ? {
               item: { type: "image", data: inline.data.toString("base64"), mimeType: inline.mimeType },
@@ -535,7 +653,7 @@ export function createTools({ jobs, config, readUsage = readCodexUsage, history 
                 preview: inline.preview,
               },
               note: inline.preview
-                ? `Inline preview: ${inline.width}x${inline.height} JPEG, sized to fit the client's tool-result limit. The full-quality PNG is at the path above.`
+                ? `Inline preview: ${inline.width}x${inline.height} JPEG, sized to fit the client's tool-result limit.${flattened} The full-quality PNG is at the path above.`
                 : null,
             }
           : { item: null, note: `(Image not inlined: no preview fits within PIXMITH_MAX_INLINE_BYTES=${config.maxInlineBytes}. Open it from the path above.)` };
@@ -543,13 +661,16 @@ export function createTools({ jobs, config, readUsage = readCodexUsage, history 
         job.inline = { item: null, note: `(Could not inline image: ${err.message}. Open it from the path above.)` };
       }
     }
-    if (job.inline?.note) lines.splice(lines.indexOf(""), 0, job.inline.note);
+    if (job.inline?.note) tail.push(job.inline.note);
 
-    const content = [{ type: "text", text: lines.join("\n") }];
-    if (job.inline?.item) content.push(job.inline.item);
-    return withData(
-      { content },
-      {
+    return {
+      status: "done",
+      head,
+      tail,
+      footer: `To change this image, call edit_image with image="${result.path}" and describe the change.`,
+      image: job.inline?.item ?? null,
+      usage: job.usageReport,
+      data: {
         status: "done",
         job_id: job.id,
         mode: job.mode,
@@ -561,13 +682,80 @@ export function createTools({ jobs, config, readUsage = readCodexUsage, history 
         size_note: result.sizeNote || undefined,
         bytes: result.bytes,
         elapsed_seconds: secs(jobs.elapsedMs(job)),
+        background: result.background,
+        has_alpha: result.hasAlpha,
         source_image: job.mode === "edit" ? result.inputImages?.[0] : undefined,
         codex_copy: result.codexHomeCopy && result.codexHomeCopy !== result.path ? result.codexHomeCopy : undefined,
         metadata_path: result.metadataPath ?? undefined,
         inline_image: job.inline?.item ? job.inline.meta : null,
         usage: job.usageReport.summary,
       },
-    );
+    };
+  }
+
+  /** The result for a single job. */
+  async function report(job, { justStarted = false } = {}) {
+    const p = await jobParts(job, { justStarted });
+    if (p.errorText) return withData(errorResult(p.errorText), p.data);
+    const lines = [...p.head, ...(p.usage?.lines ?? []), ...p.tail, "", p.footer];
+    const content = [{ type: "text", text: lines.join("\n") }];
+    if (p.image) content.push(p.image);
+    return withData({ content }, p.data);
+  }
+
+  /** The result for several variants started by one call. */
+  async function batchReport(list, { justStarted = false } = {}) {
+    const done = list.filter((j) => j.status === "done").length;
+    // The variants share the client's tool-result limit.
+    const inlineBudget = Math.floor(config.maxInlineBytes / Math.max(1, done));
+    const parts = [];
+    for (const job of list) parts.push(await jobParts(job, { justStarted, inlineBudget }));
+
+    const count = (status) => parts.filter((p) => p.status === status).length;
+    const active = count("queued") + count("running");
+    const status = active
+      ? count("running")
+        ? "running"
+        : "queued"
+      : done
+        ? "done"
+        : count("cancelled") === parts.length
+          ? "cancelled"
+          : "error";
+    const summary = [
+      `${done} of ${list.length} done`,
+      active && `${active} still working`,
+      count("error") && `${count("error")} failed`,
+      count("cancelled") && `${count("cancelled")} cancelled`,
+    ].filter(Boolean);
+
+    const lines = [`status: ${status}`, `Variants: ${summary.join(", ")}.`];
+    parts.forEach((p, i) => {
+      lines.push("", `Variant ${i + 1} of ${list.length}:`, ...p.head);
+      if (p.errorText) lines.push(p.errorText);
+      lines.push(...p.tail);
+    });
+    // One plan-usage report covers them all: the latest finished variant's.
+    const usage = [...parts].reverse().find((p) => p.usage)?.usage ?? null;
+    if (usage?.lines.length) lines.push("", ...usage.lines);
+    const footers = [];
+    if (active) {
+      footers.push(
+        "Call get_image_result with a variant's job_id to fetch it (repeat while it is queued/running). Call cancel_image to stop one.",
+      );
+    }
+    if (done) footers.push("To change a variant, call edit_image with its Path and describe the change.");
+    if (footers.length) lines.push("", ...footers);
+
+    const content = [{ type: "text", text: lines.join("\n") }, ...parts.map((p) => p.image).filter(Boolean)];
+    const data = {
+      status,
+      mode: list[0].mode,
+      job_ids: list.map((j) => j.id),
+      variants: parts.map((p) => p.data),
+      usage: usage?.summary,
+    };
+    return withData(status === "error" ? { content, isError: true } : { content }, data);
   }
 
   // ---- get_image_result / cancel_image --------------------------------------------------

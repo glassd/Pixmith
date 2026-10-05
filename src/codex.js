@@ -29,6 +29,55 @@ export function slugForFilename(prompt) {
   return base || "image";
 }
 
+/**
+ * Turn a caller-chosen `filename` into a safe base name (no folder, no
+ * extension): letters, digits, ".", "_" and "-" only, at most 100 characters.
+ * Returns null when none was given; throws a bad_request when it is a path or
+ * has nothing usable left.
+ */
+export function cleanFilename(raw) {
+  if (raw == null) return null;
+  if (typeof raw !== "string") throw new PixmithError("bad_request", "`filename` must be a string.");
+  const trimmed = raw.trim().replace(/\.png$/i, "");
+  if (/[\\/]/.test(trimmed)) {
+    throw new PixmithError("bad_request", "`filename` is a file name, not a path; choose the folder with `output_dir`.");
+  }
+  let name = trimmed
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "") // "café" -> "cafe" rather than "caf-"
+    .replace(/\s+/g, "-")
+    .replace(SAFE_NAME, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^[.-]+|[.-]+$/g, "")
+    .slice(0, 100)
+    .replace(/[.-]+$/g, "");
+  if (!name) throw new PixmithError("bad_request", `\`filename\` "${raw}" has no usable characters (letters, digits, ".", "_", "-").`);
+  // Names Windows reserves for devices, with or without an extension.
+  if (/^(con|prn|aux|nul|com\d|lpt\d)(\..*)?$/i.test(name)) name = `${name}-image`;
+  return name;
+}
+
+/**
+ * Save a new file in `dir` under `base`.png without ever overwriting: on a
+ * clash (with a PNG, or with the JSON sidecar it would get) it tries
+ * `base-2`, `base-3`, ... `write(path)` must fail with EEXIST rather than
+ * replace an existing file. Returns the path written.
+ */
+async function saveUnique(dir, base, write) {
+  for (let i = 1; i <= 1000; i += 1) {
+    const name = i === 1 ? base : `${base}-${i}`;
+    const target = path.join(dir, `${name}.png`);
+    if (fssync.existsSync(path.join(dir, `${name}.json`))) continue;
+    try {
+      await write(target);
+      return target;
+    } catch (err) {
+      if (err?.code !== "EEXIST") throw err;
+    }
+  }
+  throw new PixmithError("no_output", `Could not find a free file name for "${base}.png" in ${dir}.`);
+}
+
 /** A unique filename stamp from high-resolution time + pid. */
 function uniqueStamp() {
   const hr = process.hrtime.bigint().toString(36);
@@ -44,8 +93,9 @@ function uniqueStamp() {
  * @param {"generate"|"edit"} [opts.mode]  "edit" treats attached Image 1 as the edit target.
  * @param {number} [opts.imageCount]       How many images are attached via `codex exec -i`.
  * @param {string} [opts.promptFile]       File holding the ready-made image_gen prompt (see fastPathPrompt).
+ * @param {"auto"|"opaque"|"transparent"} [opts.background]  "auto" leaves transparency to the prompt.
  */
-export function buildPrompt(prompt, sizeValue, { mode = "generate", imageCount = 0, promptFile = null } = {}) {
+export function buildPrompt(prompt, sizeValue, { mode = "generate", imageCount = 0, promptFile = null, background = "auto" } = {}) {
   // The agent's ONLY job is to call image_gen once. Pixmith locates the saved
   // PNG itself (image_gen writes to $CODEX_HOME/generated_images/<session>/),
   // so we explicitly forbid copying / shell / filesystem hunting — that agent
@@ -91,8 +141,11 @@ export function buildPrompt(prompt, sizeValue, { mode = "generate", imageCount =
     "",
     `SIZE: ${sizeValue === "auto" ? (editing ? "auto (keep the edit target's aspect ratio)" : "auto (model decides)") : sizeValue}`,
     "",
+  );
+  if (background !== "auto") lines.push(`BACKGROUND: ${BACKGROUND_TEXT[background]}`, "");
+  lines.push(
     "RULES:",
-    "- Use the built-in image_gen tool (gpt-image-2). Do NOT use the CLI fallback, do NOT ask about OPENAI_API_KEY, do NOT use transparency unless the image prompt explicitly asks for it.",
+    `- Use the built-in image_gen tool (gpt-image-2). Do NOT use the CLI fallback, do NOT ask about OPENAI_API_KEY, ${BACKGROUND_RULE[background]}`,
     "- Generate exactly one image (no variants).",
     "- Call image_gen IMMEDIATELY as your first action. Do not write any message before the tool call.",
     `- Pass the ${editing ? "edit instruction" : "image prompt"} to image_gen exactly as written above. Do not rewrite, expand or embellish it; add only the size.`,
@@ -117,10 +170,28 @@ export function buildPrompt(prompt, sizeValue, { mode = "generate", imageCount =
 }
 
 /** The text written to the fast-path prompt file: exactly what image_gen should receive. */
-export function fastPathPrompt(prompt, sizeValue) {
+export function fastPathPrompt(prompt, sizeValue, background = "auto") {
   const size = sizeValue === "auto" ? "" : ` The image must be ${sizeValue} pixels.`;
-  return `Generate exactly ONE raster image.${size} Opaque background unless the description asks for transparency.\n\n${prompt}\n`;
+  return `Generate exactly ONE raster image.${size} ${FAST_BACKGROUND[background]}\n\n${prompt}\n`;
 }
+
+export const BACKGROUNDS = Object.freeze(["auto", "opaque", "transparent"]);
+
+const BACKGROUND_TEXT = {
+  opaque: "opaque. No transparency anywhere in the image, even if the prompt mentions it.",
+  transparent:
+    "transparent. Output a PNG with an alpha channel: the subject on a fully transparent background, with no backdrop, floor, scenery or cast shadow behind it.",
+};
+const BACKGROUND_RULE = {
+  auto: "do NOT use transparency unless the image prompt explicitly asks for it.",
+  opaque: "do NOT use transparency.",
+  transparent: "DO use a transparent background, as BACKGROUND says.",
+};
+const FAST_BACKGROUND = {
+  auto: "Opaque background unless the description asks for transparency.",
+  opaque: "Opaque background, with no transparency anywhere.",
+  transparent: "Transparent background: a PNG with an alpha channel, the subject alone with no backdrop, floor, scenery or cast shadow.",
+};
 
 /**
  * Parse the agent's final-message contract. Returns { ok: true } for DONE,
@@ -329,6 +400,44 @@ export async function readPngDimensions(filePath) {
     const width = buf.readUInt32BE(16);
     const height = buf.readUInt32BE(20);
     return width > 0 && height > 0 ? { width, height } : null;
+  } catch {
+    return null;
+  } finally {
+    if (fh) await fh.close();
+  }
+}
+
+/**
+ * Whether a PNG can hold transparency: an alpha channel (colour type 4 or 6)
+ * or a tRNS chunk ahead of the image data. It reads only chunk headers, so it
+ * says the file *can* be transparent, not that any pixel is. Null when the
+ * file is not a readable PNG.
+ */
+export async function pngHasAlpha(filePath) {
+  let fh;
+  try {
+    fh = await fs.open(filePath, "r");
+    const { size } = await fh.stat();
+    const head = Buffer.alloc(8);
+    let pos = 8; // after the signature
+    let colorType = null;
+    while (pos + 8 <= size) {
+      await fh.read(head, 0, 8, pos);
+      const length = head.readUInt32BE(0);
+      const type = head.toString("ascii", 4, 8);
+      if (type === "IHDR") {
+        const byte = Buffer.alloc(1);
+        await fh.read(byte, 0, 1, pos + 8 + 9); // width, height, bit depth, then colour type
+        colorType = byte[0];
+        if (colorType === 4 || colorType === 6) return true;
+      } else if (type === "tRNS") {
+        return true;
+      } else if (type === "IDAT" || type === "IEND") {
+        break;
+      }
+      pos += 12 + length; // length + type + data + CRC
+    }
+    return colorType === null ? null : false;
   } catch {
     return null;
   } finally {
@@ -584,19 +693,36 @@ export function detectAuthFailure(stderr, stdout) {
  * @param {string} [args.outputDir] Absolute destination directory (defaults to config).
  * @param {string[]} [args.images] Absolute paths of input images, attached to the Codex prompt.
  * @param {"generate"|"edit"} [args.mode] "edit" treats images[0] as the edit target (and defaults size to "auto").
+ * @param {"auto"|"opaque"|"transparent"} [args.background] Ask for a transparent or an opaque background.
+ * @param {string} [args.filename] Base name for the PNG (see cleanFilename); never overwrites, adds -2, -3... on a clash.
  * @param {AbortSignal} [args.signal] Abort to cancel: the Codex process tree is killed and a "cancelled" error is thrown.
  * @param {(stage:string)=>void} [args.onStage] Called as the run moves through STAGE_LABELS keys.
  * @param {(line:string)=>void} [args.onProgress] Optional stderr progress sink.
- * @returns {Promise<{path:string, size:string, requestedSize:string, sizeNote:string, width:number|null, height:number|null, bytes:number, codexHomeCopy:string|null, sessionId:string|null, mode:string, inputImages:string[], metadataPath:string|null, durationMs:number}>}
+ * @returns {Promise<{path:string, size:string, requestedSize:string, sizeNote:string, width:number|null, height:number|null, bytes:number, codexHomeCopy:string|null, sessionId:string|null, mode:string, inputImages:string[], background:string, hasAlpha:boolean|null, metadataPath:string|null, durationMs:number}>}
  *   `size` is the actual "WIDTHxHEIGHT" read from the PNG (falls back to the
  *   requested size if the header can't be read); `requestedSize` is what was
  *   asked of Codex.
  */
-export async function generateImage({ prompt, size, outputDir, images, mode = "generate", signal, onStage, onProgress } = {}) {
+export async function generateImage({
+  prompt,
+  size,
+  outputDir,
+  images,
+  mode = "generate",
+  background = "auto",
+  filename,
+  signal,
+  onStage,
+  onProgress,
+} = {}) {
   const startedAt = Date.now();
   if (mode !== "generate" && mode !== "edit") {
     throw new PixmithError("bad_request", `Unknown mode "${mode}" (expected "generate" or "edit").`);
   }
+  if (!BACKGROUNDS.includes(background)) {
+    throw new PixmithError("bad_request", `\`background\` must be one of ${BACKGROUNDS.join(", ")} (got "${background}").`);
+  }
+  const chosenName = cleanFilename(filename);
   if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
     throw new PixmithError("bad_request", "`prompt` is required and must be a non-empty string.");
   }
@@ -642,8 +768,7 @@ export async function generateImage({ prompt, size, outputDir, images, mode = "g
   const destDir = path.resolve(outputDir ? outputDir.trim() : config.defaultOutputDir);
   await fs.mkdir(destDir, { recursive: true });
 
-  const filename = `${slugForFilename(prompt)}-${uniqueStamp()}.png`.replace(SAFE_NAME, "-");
-  const targetPath = path.join(destDir, filename);
+  const baseName = chosenName ?? `${slugForFilename(prompt)}-${uniqueStamp()}`.replace(SAFE_NAME, "-");
 
   // 3. Temp file for Codex's final message.
   const lastMsgPath = path.join(os.tmpdir(), `pixmith-last-${uniqueStamp()}.txt`);
@@ -657,11 +782,11 @@ export async function generateImage({ prompt, size, outputDir, images, mode = "g
     if (promptFile.includes("'")) {
       promptFile = null; // would break the shell quoting in the scripted call
     } else {
-      await fs.writeFile(promptFile, fastPathPrompt(prompt.trim(), sizeValue));
+      await fs.writeFile(promptFile, fastPathPrompt(prompt.trim(), sizeValue, background));
     }
   }
 
-  const fullPrompt = buildPrompt(prompt.trim(), sizeValue, { mode, imageCount: inputImages.length, promptFile });
+  const fullPrompt = buildPrompt(prompt.trim(), sizeValue, { mode, imageCount: inputImages.length, promptFile, background });
 
   // Snapshot generated images and rollout logs BEFORE the run. These are only
   // the fallback when Codex's session id can't be parsed from its output; the
@@ -776,11 +901,13 @@ export async function generateImage({ prompt, size, outputDir, images, mode = "g
     }
   }
 
+  // Our copy in destDir; never replaces an existing file.
+  let ownCopy = null;
   let finalPath = null;
   if (sourcePng) {
     try {
-      await fs.copyFile(sourcePng, targetPath);
-      finalPath = targetPath;
+      ownCopy = await saveUnique(destDir, baseName, (to) => fs.copyFile(sourcePng, to, fssync.constants.COPYFILE_EXCL));
+      finalPath = ownCopy;
     } catch {
       finalPath = sourcePng; // fall back to returning the source path directly
     }
@@ -795,8 +922,8 @@ export async function generateImage({ prompt, size, outputDir, images, mode = "g
       extractBase64Png(stderr) ||
       (await recoverFromRolloutLogs(rolloutsBefore, sessionId));
     if (recovered) {
-      await fs.writeFile(targetPath, recovered);
-      finalPath = targetPath;
+      ownCopy = await saveUnique(destDir, baseName, (to) => fs.writeFile(to, recovered, { flag: "wx" }));
+      finalPath = ownCopy;
     }
   }
 
@@ -810,7 +937,8 @@ export async function generateImage({ prompt, size, outputDir, images, mode = "g
       const size = dims ? `${dims.width}x${dims.height}` : sizeValue;
       // Only for our own copy: a fallback path inside CODEX_HOME gets no sidecar.
       let metadataPath = null;
-      if (config.writeMetadata && finalPath === targetPath) {
+      const hasAlpha = await pngHasAlpha(finalPath);
+      if (config.writeMetadata && finalPath === ownCopy) {
         const editing = mode === "edit";
         metadataPath = await writeMetadata(finalPath, {
           pixmith_version: config.version,
@@ -824,6 +952,8 @@ export async function generateImage({ prompt, size, outputDir, images, mode = "g
           height: dims?.height ?? null,
           requested_size: sizeValue,
           ...(sizeNote ? { size_note: sizeNote } : {}),
+          background,
+          has_alpha: hasAlpha,
           ...(editing ? { source_image: inputImages[0] } : {}),
           reference_images: editing ? inputImages.slice(1) : inputImages,
           codex_session_id: sessionId,
@@ -843,6 +973,8 @@ export async function generateImage({ prompt, size, outputDir, images, mode = "g
         mode,
         inputImages,
         stoppedEarly: Boolean(run.stoppedEarly),
+        background,
+        hasAlpha,
         metadataPath,
         durationMs: Date.now() - startedAt,
       };
