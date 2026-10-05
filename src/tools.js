@@ -4,7 +4,7 @@ import path from "node:path";
 import { normalizeSize } from "./config.js";
 import { PixmithError, STAGE_LABELS, validateInputImages, MAX_INPUT_IMAGES } from "./codex.js";
 import { makeInlineImage } from "./preview.js";
-import { creditGate, readUsage as readCodexUsage, usageLines } from "./usage.js";
+import { creditGate, readUsage as readCodexUsage, usageLines, usageSummary } from "./usage.js";
 
 // Pixmith's MCP tool layer. A generation outlives the per-request timeout some
 // MCP clients enforce, so no tool call ever blocks for longer than
@@ -21,6 +21,104 @@ import { creditGate, readUsage as readCodexUsage, usageLines } from "./usage.js"
 //
 // While a call waits, progress notifications carry the real stage reported by
 // Codex plus elapsed / expected time, for clients that display them.
+//
+// Every result also carries structuredContent matching the tool's outputSchema
+// (unless PIXMITH_STRUCTURED_OUTPUT=false), so a client can read the status,
+// path and job_id without parsing text. The text and the inline image stay in
+// `content` for the model and for clients without structured output.
+
+const ERROR_SCHEMA = {
+  type: "object",
+  description: 'Why the call or job failed. Present when status is "error".',
+  properties: {
+    kind: {
+      type: "string",
+      description: "Machine-readable kind, e.g. bad_request, usage_limit, credits_confirmation_needed, not_signed_in, timeout, generation_failed.",
+    },
+    message: { type: "string" },
+    next_step: { type: "string", description: "What the user can do about it." },
+  },
+  required: ["kind", "message"],
+};
+
+const USAGE_SCHEMA = {
+  type: ["object", "null"],
+  description: "The ChatGPT plan's Codex usage when the job finished; null when unknown or turned off.",
+  properties: {
+    plan: { type: ["string", "null"] },
+    windows: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          label: { type: "string", description: 'e.g. "5-hour" or "weekly".' },
+          used_percent: { type: "number" },
+          resets_at: { type: ["string", "null"], description: "ISO 8601 time the window resets." },
+        },
+        required: ["label", "used_percent", "resets_at"],
+      },
+    },
+    near_limit: { type: "boolean", description: "A window is past PIXMITH_USAGE_WARN_PERCENT." },
+    credits_available: { type: "boolean" },
+  },
+  required: ["windows", "near_limit", "credits_available"],
+};
+
+const STATUSES = ["queued", "running", "done", "cancelled", "error"];
+
+/** Output of generate_image, edit_image and get_image_result. */
+export const JOB_OUTPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    status: { type: "string", enum: STATUSES },
+    job_id: { type: "string", description: "Absent only when the call failed before a job was created." },
+    mode: { type: "string", enum: ["generate", "edit"] },
+    stage: { type: "string", description: "What a queued or running job is doing." },
+    queue_position: { type: "integer", description: "1-based position of a queued job." },
+    elapsed_seconds: { type: "integer" },
+    expected_seconds: { type: "integer", description: "Typical total time for this kind of job, from recent history." },
+    path: { type: "string", description: "Absolute path of the saved PNG." },
+    size: { type: "string", description: 'Actual "WIDTHxHEIGHT" of the PNG.' },
+    width: { type: ["integer", "null"] },
+    height: { type: ["integer", "null"] },
+    requested_size: { type: "string" },
+    size_note: { type: "string", description: "How the requested size was adjusted, if it was." },
+    bytes: { type: "integer" },
+    source_image: { type: "string", description: "The image an edit was made from." },
+    codex_copy: { type: "string", description: "Codex's own copy of the PNG under CODEX_HOME." },
+    inline_image: {
+      type: ["object", "null"],
+      description: "The image sent in `content`; null when none was sent.",
+      properties: {
+        mime_type: { type: "string" },
+        width: { type: ["integer", "null"] },
+        height: { type: ["integer", "null"] },
+        preview: { type: "boolean", description: "True when it is a reduced JPEG preview, not the PNG itself." },
+      },
+      required: ["mime_type", "width", "height", "preview"],
+    },
+    usage: USAGE_SCHEMA,
+    error: ERROR_SCHEMA,
+  },
+  required: ["status"],
+};
+
+/** Output of cancel_image. */
+export const CANCEL_OUTPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    status: { type: "string", enum: STATUSES, description: "The job's status after this call." },
+    job_id: { type: "string" },
+    cancel_requested: {
+      type: "boolean",
+      description: 'True when this call cancelled the job. With status still "running", Codex is being stopped.',
+    },
+    previous_status: { type: "string", enum: ["queued", "running"] },
+    elapsed_seconds: { type: "integer" },
+    error: ERROR_SCHEMA,
+  },
+  required: ["status"],
+};
 
 /** Stages in which the image already exists and only bookkeeping remains. */
 const FINAL_STAGES = new Set(["finishing", "saving"]);
@@ -38,6 +136,11 @@ export function createTools({ jobs, config, readUsage = readCodexUsage }) {
       return null;
     }
   };
+
+  const structuredOn = config.structuredOutput !== false;
+  const outputSchema = (schema) => (structuredOn ? { outputSchema: schema } : {});
+  /** Attach structuredContent (dropping undefined fields) when it is turned on. */
+  const withData = (result, data) => (structuredOn ? { ...result, structuredContent: compact(data) } : result);
 
   const waitSecs = secs(config.pollWaitMs);
   const typical = () => `~${secs(jobs.stats.estimate("generate"))}s`;
@@ -98,6 +201,7 @@ export function createTools({ jobs, config, readUsage = readCodexUsage }) {
       required: ["prompt"],
       additionalProperties: false,
     },
+    ...outputSchema(JOB_OUTPUT_SCHEMA),
   };
 
   const EDIT_TOOL = {
@@ -128,6 +232,7 @@ export function createTools({ jobs, config, readUsage = readCodexUsage }) {
       required: ["image", "prompt"],
       additionalProperties: false,
     },
+    ...outputSchema(JOB_OUTPUT_SCHEMA),
   };
 
   const RESULT_TOOL = {
@@ -145,6 +250,7 @@ export function createTools({ jobs, config, readUsage = readCodexUsage }) {
       },
       additionalProperties: false,
     },
+    ...outputSchema(JOB_OUTPUT_SCHEMA),
   };
 
   const CANCEL_TOOL = {
@@ -159,6 +265,7 @@ export function createTools({ jobs, config, readUsage = readCodexUsage }) {
       },
       additionalProperties: false,
     },
+    ...outputSchema(CANCEL_OUTPUT_SCHEMA),
   };
 
   // ---- shared argument validation -------------------------------------------------
@@ -289,28 +396,44 @@ export function createTools({ jobs, config, readUsage = readCodexUsage }) {
   async function report(job, { justStarted = false } = {}) {
     if (job.status === "done") return doneResult(job);
 
-    if (job.status === "error") return errorResult(formatError(job.error));
+    if (job.status === "error") return withData(errorResult(formatError(job.error)), errorData(job.error, job));
 
     if (job.status === "cancelled") {
-      return text([`status: cancelled`, `job_id: ${job.id}`, "", "This job was cancelled. No image was produced."]);
+      return withData(text([`status: cancelled`, `job_id: ${job.id}`, "", "This job was cancelled. No image was produced."]), {
+        status: "cancelled",
+        job_id: job.id,
+        mode: job.mode,
+      });
     }
 
     const lines = [`status: ${job.status}`, `job_id: ${job.id}`, `stage: ${stageText(job)}`];
     const typicalSecs = secs(jobs.etaMs(job));
+    const elapsed = secs(jobs.elapsedMs(job));
+    const data = {
+      status: job.status,
+      job_id: job.id,
+      mode: job.mode,
+      stage: stageText(job),
+      elapsed_seconds: elapsed,
+      expected_seconds: typicalSecs,
+    };
     if (job.status === "queued") {
-      lines.push(`queue_position: ${jobs.queuePosition(job.id)} (max ${jobs.maxConcurrent} at once; each takes ~${typicalSecs}s)`);
+      data.queue_position = jobs.queuePosition(job.id);
+      lines.push(`queue_position: ${data.queue_position} (max ${jobs.maxConcurrent} at once; each takes ~${typicalSecs}s)`);
     } else {
-      const elapsed = secs(jobs.elapsedMs(job));
       const outlook = elapsed > typicalSecs ? "taking longer than usual" : `about ${secs(jobs.remainingMs(job))}s left`;
       lines.push(`elapsed: ${elapsed}s (typical: ~${typicalSecs}s, ${outlook})`);
     }
-    if (justStarted && job.sizeNote) lines.push(`size_note: ${job.sizeNote}`);
+    if (justStarted && job.sizeNote) {
+      data.size_note = job.sizeNote;
+      lines.push(`size_note: ${job.sizeNote}`);
+    }
     lines.push(
       "",
       `${justStarted ? "The job is underway" : "Still working"}. Call get_image_result with this job_id to fetch the image ` +
         "(repeat while status is queued/running). Call cancel_image to stop it.",
     );
-    return text(lines);
+    return withData(text(lines), data);
   }
 
   async function doneResult(job) {
@@ -332,8 +455,12 @@ export function createTools({ jobs, config, readUsage = readCodexUsage }) {
     if (result.codexHomeCopy && result.codexHomeCopy !== result.path) lines.push(`Codex copy: ${result.codexHomeCopy}`);
     // Read once per job: the figure describes the moment the job finished, and a
     // result can be fetched several times.
-    job.usageLines ??= usageLines(await safeUsage({ sessionId: result.sessionId }), { warnPercent: config.usageWarnPercent });
-    lines.push(...job.usageLines);
+    if (!job.usageReport) {
+      const usage = await safeUsage({ sessionId: result.sessionId });
+      const opts = { warnPercent: config.usageWarnPercent };
+      job.usageReport = { lines: usageLines(usage, opts), summary: usageSummary(usage, opts) };
+    }
+    lines.push(...job.usageReport.lines);
     if (config.codexBinNote) lines.push(`Note: ${config.codexBinNote}`);
     lines.push(`job_id: ${job.id}`, "", `To change this image, call edit_image with image="${result.path}" and describe the change.`);
 
@@ -346,6 +473,12 @@ export function createTools({ jobs, config, readUsage = readCodexUsage }) {
         job.inline = inline
           ? {
               item: { type: "image", data: inline.data.toString("base64"), mimeType: inline.mimeType },
+              meta: {
+                mime_type: inline.mimeType,
+                width: inline.width ?? result.width ?? null,
+                height: inline.height ?? result.height ?? null,
+                preview: inline.preview,
+              },
               note: inline.preview
                 ? `Inline preview: ${inline.width}x${inline.height} JPEG, sized to fit the client's tool-result limit. The full-quality PNG is at the path above.`
                 : null,
@@ -359,7 +492,26 @@ export function createTools({ jobs, config, readUsage = readCodexUsage }) {
 
     const content = [{ type: "text", text: lines.join("\n") }];
     if (job.inline?.item) content.push(job.inline.item);
-    return { content };
+    return withData(
+      { content },
+      {
+        status: "done",
+        job_id: job.id,
+        mode: job.mode,
+        path: result.path,
+        size: result.size,
+        width: result.width ?? null,
+        height: result.height ?? null,
+        requested_size: result.requestedSize,
+        size_note: result.sizeNote || undefined,
+        bytes: result.bytes,
+        elapsed_seconds: secs(jobs.elapsedMs(job)),
+        source_image: job.mode === "edit" ? result.inputImages?.[0] : undefined,
+        codex_copy: result.codexHomeCopy && result.codexHomeCopy !== result.path ? result.codexHomeCopy : undefined,
+        inline_image: job.inline?.item ? job.inline.meta : null,
+        usage: job.usageReport.summary,
+      },
+    );
   }
 
   // ---- get_image_result / cancel_image --------------------------------------------------
@@ -399,31 +551,37 @@ export function createTools({ jobs, config, readUsage = readCodexUsage }) {
     const job = resolveJob(args, { activeOnly: args.job_id == null });
     const was = await jobs.cancel(job);
     if (was === null) {
-      return text([
-        `status: ${job.status}`,
-        `job_id: ${job.id}`,
-        "",
+      const note =
         job.status === "done"
           ? "Nothing to cancel: this job had already finished. Call get_image_result to fetch its image."
-          : "Nothing to cancel: this job is no longer running.",
-      ]);
+          : "Nothing to cancel: this job is no longer running.";
+      return withData(text([`status: ${job.status}`, `job_id: ${job.id}`, "", note]), {
+        status: job.status,
+        job_id: job.id,
+        cancel_requested: false,
+      });
     }
     if (jobs.isActive(job)) {
-      return text([
-        `status: ${job.status}`,
-        `job_id: ${job.id}`,
-        "",
-        "Cancellation was requested and the Codex session is being stopped; it has not exited yet.",
-      ]);
+      const note = "Cancellation was requested and the Codex session is being stopped; it has not exited yet.";
+      return withData(text([`status: ${job.status}`, `job_id: ${job.id}`, "", note]), {
+        status: job.status,
+        job_id: job.id,
+        cancel_requested: true,
+        previous_status: was,
+      });
     }
-    return text([
-      "status: cancelled",
-      `job_id: ${job.id}`,
-      "",
+    const elapsed = secs(jobs.elapsedMs(job));
+    const note =
       was === "queued"
         ? "The job was removed from the queue before it started."
-        : `The running job was stopped after ${secs(jobs.elapsedMs(job))}s. No image was produced.`,
-    ]);
+        : `The running job was stopped after ${elapsed}s. No image was produced.`;
+    return withData(text(["status: cancelled", `job_id: ${job.id}`, "", note]), {
+      status: "cancelled",
+      job_id: job.id,
+      cancel_requested: true,
+      previous_status: was,
+      elapsed_seconds: was === "running" ? elapsed : undefined,
+    });
   }
 
   async function call(name, args = {}, request, extra) {
@@ -434,7 +592,7 @@ export function createTools({ jobs, config, readUsage = readCodexUsage }) {
       if (name === CANCEL_TOOL.name) return await cancel(args);
       return errorResult(`Unknown tool: ${name}`);
     } catch (err) {
-      return errorResult(formatError(err));
+      return withData(errorResult(formatError(err)), errorData(err));
     }
   }
 
@@ -468,4 +626,22 @@ export function formatError(err) {
 
 function errorResult(message) {
   return { content: [{ type: "text", text: message }], isError: true };
+}
+
+/** structuredContent for a failure, with the job it belongs to when there is one. */
+function errorData(err, job = null) {
+  const kind = err instanceof PixmithError ? err.kind : "unexpected";
+  return {
+    status: "error",
+    job_id: job?.id,
+    mode: job?.mode,
+    error: { kind, message: err?.message || String(err), next_step: NEXT_STEPS[kind] },
+  };
+}
+
+/** A copy of `obj` without undefined fields, recursively, so it validates against the schemas. */
+function compact(obj) {
+  if (Array.isArray(obj)) return obj.map(compact);
+  if (!obj || typeof obj !== "object") return obj;
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined).map(([k, v]) => [k, compact(v)]));
 }

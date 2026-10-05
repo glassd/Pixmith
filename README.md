@@ -241,6 +241,45 @@ A queued job is dropped; a running job's Codex session is killed at once, so it 
 using your ChatGPT quota. Pixmith also stops every running session when the MCP client
 disconnects.
 
+### Structured results
+
+Besides the readable text (and the inline image), every result carries
+`structuredContent` that matches the tool's declared `outputSchema`, so a client or
+script can read the outcome without parsing text. `generate_image`, `edit_image` and
+`get_image_result` share one shape:
+
+```json
+{
+  "status": "done",
+  "job_id": "3f9c…",
+  "mode": "generate",
+  "path": "/abs/path/images/a-red-fox-….png",
+  "size": "1024x1024", "width": 1024, "height": 1024,
+  "requested_size": "1024x1024",
+  "bytes": 2481152,
+  "elapsed_seconds": 34,
+  "inline_image": { "mime_type": "image/jpeg", "width": 1024, "height": 1024, "preview": true },
+  "usage": {
+    "plan": "plus",
+    "windows": [{ "label": "5-hour", "used_percent": 12, "resets_at": "2026-10-05T23:10:00.000Z" }],
+    "near_limit": false,
+    "credits_available": false
+  }
+}
+```
+
+- `status` is `queued`, `running`, `done`, `cancelled` or `error`. A queued or running
+  job adds `stage`, `queue_position`, `elapsed_seconds` and `expected_seconds`; an edit
+  adds `source_image`.
+- A failure has `status: "error"` and an `error` object with a machine-readable `kind`
+  (`bad_request`, `usage_limit`, `credits_confirmation_needed`, `not_signed_in`,
+  `timeout`, …), the `message`, and usually a `next_step`.
+- `cancel_image` returns the job's `status` after the call, `cancel_requested`, and the
+  `previous_status` it had.
+
+Set `PIXMITH_STRUCTURED_OUTPUT=false` to leave it out, for a client that mishandles
+structured tool results.
+
 ### Plan usage and credits
 
 Codex records your ChatGPT plan's limits in its session logs. Pixmith reads the latest
@@ -323,6 +362,7 @@ when it differs.
 | `PIXMITH_TIMEOUT_MS`       | `300000` (5 min)                                     | Hard timeout per generation.                                    |
 | `PIXMITH_MAX_CONCURRENT`   | `1`                                                  | How many Codex generations may run at once. Extra jobs queue.   |
 | `PIXMITH_RETURN_IMAGE`     | `true`                                               | Set `false` to return only the path, never inline bytes.        |
+| `PIXMITH_STRUCTURED_OUTPUT` | `true`                                              | Declare an `outputSchema` on each tool and return `structuredContent` next to the text. See [structured results](#structured-results). |
 | `PIXMITH_MAX_INLINE_BYTES` | `696320` (680 KB)                                    | Byte budget for the inline image. A PNG over it is sent as a JPEG preview that fits (quality 85, long edge at most 2048px, downscaled further only if needed). The default keeps the whole result under Claude Desktop's 1 MB tool-result cap, since base64 adds a third. Raise it only for clients without that cap. |
 
 See [`.env.example`](.env.example) for a copy-paste starting point.

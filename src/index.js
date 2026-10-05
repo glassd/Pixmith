@@ -1,17 +1,15 @@
 #!/usr/bin/env node
 import path from "node:path";
 
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
 import { config, configWarnings } from "./config.js";
 import { generateImage, killAllCodex } from "./codex.js";
 import { DurationStats, JobManager } from "./jobs.js";
-import { createTools } from "./tools.js";
+import { createServer } from "./server.js";
 
-// Wiring only: the tools live in tools.js, the queue in jobs.js, and the Codex
-// driver in codex.js.
+// Wiring only: the MCP server is in server.js, the tools in tools.js, the queue
+// in jobs.js, and the Codex driver in codex.js.
 
 const jobs = new JobManager({
   generate: generateImage,
@@ -19,14 +17,7 @@ const jobs = new JobManager({
   stats: new DurationStats({ file: path.join(config.stateDir, "stats.json") }),
   log: (job, line) => process.stderr.write(`[codex ${job.id.slice(0, 8)}] ${line}\n`),
 });
-const { tools, call } = createTools({ jobs, config });
-
-const server = new Server({ name: "pixmith", version: config.version }, { capabilities: { tools: {} } });
-
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
-server.setRequestHandler(CallToolRequestSchema, (request, extra) =>
-  call(request.params.name, request.params.arguments || {}, request, extra),
-);
+const server = createServer({ jobs, config });
 
 // When the client goes away, stop any Codex sessions still running so they do
 // not keep spending the ChatGPT plan's quota on images nobody will collect.

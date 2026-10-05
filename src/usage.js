@@ -180,6 +180,26 @@ export function usageLines(usage, { warnPercent = 80, now = Date.now() } = {}) {
 }
 
 /**
+ * The structured form of usageLines, for tool results' structuredContent:
+ * the live windows with their reset times, plus whether any is past
+ * `warnPercent`. Null when there is no live snapshot.
+ */
+export function usageSummary(usage, { warnPercent = 80, now = Date.now() } = {}) {
+  const live = liveWindows(usage, now);
+  if (!live.length) return null;
+  return {
+    plan: usage.plan,
+    windows: live.map((w) => ({
+      label: w.label,
+      used_percent: w.usedPercent,
+      resets_at: w.resetsAt ? new Date(w.resetsAt).toISOString() : null,
+    })),
+    near_limit: live.some((w) => w.usedPercent >= warnPercent),
+    credits_available: usage.credits.available,
+  };
+}
+
+/**
  * Decide whether a new job may start. Returns { action, message }:
  *   "proceed"  start the job
  *   "confirm"  the plan limit is reached; the user must agree to continue
