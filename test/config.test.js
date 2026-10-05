@@ -91,20 +91,39 @@ test("normalizeSize: every accepted value satisfies SIZE_LIMITS", () => {
 
 test("resolveCodexBin: override, auto-detection, and recovery from a stale override", () => {
   const candidates = ["/opt/a/codex", "/home/u/.local/bin/codex"];
-  const only = (...present) => (p) => present.includes(p);
+  const only =
+    (...present) =>
+    (p) =>
+      present.includes(p);
 
   // No override: first existing candidate, else the bare command for PATH lookup.
-  assert.deepEqual(resolveCodexBin(null, candidates, only("/home/u/.local/bin/codex")), { bin: "/home/u/.local/bin/codex", note: null });
+  assert.deepEqual(resolveCodexBin(null, candidates, only("/home/u/.local/bin/codex")), {
+    bin: "/home/u/.local/bin/codex",
+    note: null,
+  });
   assert.deepEqual(resolveCodexBin(null, candidates, only()), { bin: "codex", note: null });
 
   // A valid override, or a bare command name, is always honoured.
-  assert.equal(resolveCodexBin("/custom/codex", candidates, only("/custom/codex", "/opt/a/codex")).bin, "/custom/codex");
-  assert.deepEqual(resolveCodexBin("codex-nightly", candidates, only("/opt/a/codex")), { bin: "codex-nightly", note: null });
+  assert.equal(
+    resolveCodexBin("/custom/codex", candidates, only("/custom/codex", "/opt/a/codex")).bin,
+    "/custom/codex",
+  );
+  assert.deepEqual(resolveCodexBin("codex-nightly", candidates, only("/opt/a/codex")), {
+    bin: "codex-nightly",
+    note: null,
+  });
 
   // A stale override falls back to auto-detection and explains itself.
-  const stale = resolveCodexBin("/Applications/Codex.app/Contents/Resources/codex", candidates, only("/home/u/.local/bin/codex"));
+  const stale = resolveCodexBin(
+    "/Applications/Codex.app/Contents/Resources/codex",
+    candidates,
+    only("/home/u/.local/bin/codex"),
+  );
   assert.equal(stale.bin, "/home/u/.local/bin/codex");
-  assert.match(stale.note, /CODEX_BIN is set to "\/Applications\/Codex\.app.*does not exist.*update or remove CODEX_BIN/s);
+  assert.match(
+    stale.note,
+    /CODEX_BIN is set to "\/Applications\/Codex\.app.*does not exist.*update or remove CODEX_BIN/s,
+  );
 
   // Stale with nothing better: keep it, so the error names the configured path.
   assert.deepEqual(resolveCodexBin("/gone/codex", candidates, only()), { bin: "/gone/codex", note: null });

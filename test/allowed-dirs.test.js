@@ -13,7 +13,10 @@ test("parseAllowedDirs: unset allows anything; relative entries are ignored with
 
   const warnings = [];
   const abs = path.resolve("/data/images");
-  assert.deepEqual(parseAllowedDirs(`${abs}${path.delimiter} relative/dir ${path.delimiter}${path.delimiter}`, warnings), [abs]);
+  assert.deepEqual(
+    parseAllowedDirs(`${abs}${path.delimiter} relative/dir ${path.delimiter}${path.delimiter}`, warnings),
+    [abs],
+  );
   assert.deepEqual(warnings, ['PIXMITH_ALLOWED_DIRS entry "relative/dir" is not an absolute path and was ignored.']);
 
   // Set, but nothing usable: only the default output folder stays allowed (never "anything").
@@ -52,25 +55,36 @@ test("assertOutputDirAllowed: outside, look-alike prefixes and .. are refused", 
     await refused(path.join(allowed, "sub", "..", "..", "elsewhere"));
   }));
 
-test("assertOutputDirAllowed: a symlink cannot lead out of an allowed folder", { skip: process.platform === "win32" && "creating symlinks needs extra rights on Windows" }, () =>
-  withDirs(async ({ allowed, other, ok, refused }) => {
-    await fs.symlink(other, path.join(allowed, "escape"));
-    await refused(path.join(allowed, "escape"));
-    await refused(path.join(allowed, "escape", "deeper", "not-yet-created"));
+test(
+  "assertOutputDirAllowed: a symlink cannot lead out of an allowed folder",
+  { skip: process.platform === "win32" && "creating symlinks needs extra rights on Windows" },
+  () =>
+    withDirs(async ({ allowed, other, ok, refused }) => {
+      await fs.symlink(other, path.join(allowed, "escape"));
+      await refused(path.join(allowed, "escape"));
+      await refused(path.join(allowed, "escape", "deeper", "not-yet-created"));
 
-    // ...but a link into an allowed folder is fine.
-    await fs.symlink(allowed, path.join(other, "into-allowed"));
-    await ok(path.join(other, "into-allowed", "sub"));
-  }));
+      // ...but a link into an allowed folder is fine.
+      await fs.symlink(allowed, path.join(other, "into-allowed"));
+      await ok(path.join(other, "into-allowed", "sub"));
+    }),
+);
 
 test("assertOutputDirAllowed: no allowlist allows any folder; an empty one only the default", () =>
   withDirs(async ({ other, defaults }) => {
     await assertOutputDirAllowed(other, { allowedDirs: null, defaultOutputDir: defaults });
-    await assert.rejects(assertOutputDirAllowed(other, { allowedDirs: [], defaultOutputDir: defaults }), (e) => e.kind === "dir_not_allowed");
+    await assert.rejects(
+      assertOutputDirAllowed(other, { allowedDirs: [], defaultOutputDir: defaults }),
+      (e) => e.kind === "dir_not_allowed",
+    );
     await assertOutputDirAllowed(defaults, { allowedDirs: [], defaultOutputDir: defaults });
   }));
 
-test("assertOutputDirAllowed: case-insensitive where the file system usually is", { skip: !["win32", "darwin"].includes(process.platform) && "case-sensitive file systems" }, () =>
-  withDirs(async ({ allowed, ok }) => {
-    await ok(allowed.toUpperCase());
-  }));
+test(
+  "assertOutputDirAllowed: case-insensitive where the file system usually is",
+  { skip: !["win32", "darwin"].includes(process.platform) && "case-sensitive file systems" },
+  () =>
+    withDirs(async ({ allowed, ok }) => {
+      await ok(allowed.toUpperCase());
+    }),
+);

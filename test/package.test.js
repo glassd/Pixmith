@@ -22,7 +22,10 @@ test("readEnv: unset, blank and unfilled bundle placeholders all count as unset"
 test("defaultDirs: a git checkout keeps the project folders; an installed copy uses per-user folders", () => {
   const root = path.resolve("/opt/pixmith");
   const home = path.resolve("/home/me");
-  const only = (...paths) => (p) => paths.includes(p);
+  const only =
+    (...paths) =>
+    (p) =>
+      paths.includes(p);
 
   assert.deepEqual(defaultDirs({ root, home, exists: only(path.join(root, ".git")) }), {
     images: path.join(root, "images"),
@@ -36,17 +39,25 @@ test("defaultDirs: a git checkout keeps the project folders; an installed copy u
     state: path.join(home, "Library", "Application Support", "Pixmith"),
     installed: true,
   });
-  assert.equal(defaultDirs({ root, home, platform: "linux", env: {}, exists: pictures }).state, path.join(home, ".local", "state", "pixmith"));
   assert.equal(
-    defaultDirs({ root, home, platform: "linux", env: { XDG_STATE_HOME: path.resolve("/xdg") }, exists: pictures }).state,
+    defaultDirs({ root, home, platform: "linux", env: {}, exists: pictures }).state,
+    path.join(home, ".local", "state", "pixmith"),
+  );
+  assert.equal(
+    defaultDirs({ root, home, platform: "linux", env: { XDG_STATE_HOME: path.resolve("/xdg") }, exists: pictures })
+      .state,
     path.join(path.resolve("/xdg"), "pixmith"),
   );
   assert.equal(
-    defaultDirs({ root, home, platform: "win32", env: { LOCALAPPDATA: path.resolve("/appdata") }, exists: pictures }).state,
+    defaultDirs({ root, home, platform: "win32", env: { LOCALAPPDATA: path.resolve("/appdata") }, exists: pictures })
+      .state,
     path.join(path.resolve("/appdata"), "Pixmith"),
   );
   // No Pictures folder: straight into the home folder.
-  assert.equal(defaultDirs({ root, home, platform: "linux", env: {}, exists: only() }).images, path.join(home, "Pixmith"));
+  assert.equal(
+    defaultDirs({ root, home, platform: "linux", env: {}, exists: only() }).images,
+    path.join(home, "Pixmith"),
+  );
 });
 
 test("manifest.json: in step with package.json and the tools", async () => {
@@ -58,7 +69,11 @@ test("manifest.json: in step with package.json and the tools", async () => {
   assert.deepEqual(manifest.server.mcp_config.args, [`\${__dirname}/${pkg.main}`]);
 
   const { tools } = createTools({ jobs: { stats: { estimate: () => 40_000 } }, config: { pollWaitMs: 45_000 } });
-  assert.deepEqual(manifest.tools.map((t) => t.name), tools.map((t) => t.name), "manifest.json lists every tool, in order");
+  assert.deepEqual(
+    manifest.tools.map((t) => t.name),
+    tools.map((t) => t.name),
+    "manifest.json lists every tool, in order",
+  );
 
   // Every setting is passed on, and every placeholder names a setting.
   const used = Object.values(manifest.server.mcp_config.env).map((v) => v.match(/^\$\{user_config\.(\w+)\}$/)?.[1]);
@@ -74,6 +89,9 @@ test(".mcpbignore: project-level patterns are anchored to the root", async () =>
     .filter((l) => l && !l.startsWith("#"));
   for (const line of lines) {
     // A bare "dist/" would also drop node_modules/@modelcontextprotocol/sdk/dist/.
-    assert.ok(line.startsWith("/") || line.startsWith("*."), `"${line}" must start with "/" (or be an extension like *.mcpb)`);
+    assert.ok(
+      line.startsWith("/") || line.startsWith("*."),
+      `"${line}" must start with "/" (or be an extension like *.mcpb)`,
+    );
   }
 });

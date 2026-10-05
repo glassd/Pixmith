@@ -82,7 +82,10 @@ test("makeInlineImage: a preview's long edge is capped at 2048px even when a big
     await fs.writeFile(file, data);
     const budget = 400 * 1024;
     assert.ok(data.length > budget, "the fixture must start over budget");
-    assert.ok(jpeg.encode({ data: png.data, width: w, height: h }, 85).data.length <= budget, "a full-size JPEG would fit");
+    assert.ok(
+      jpeg.encode({ data: png.data, width: w, height: h }, 85).data.length <= budget,
+      "a full-size JPEG would fit",
+    );
 
     const out = await makeInlineImage(file, budget);
     assert.equal(out.preview, true);
@@ -92,7 +95,10 @@ test("makeInlineImage: a preview's long edge is capped at 2048px even when a big
 test("makeInlineImage: an unreadable PNG rejects instead of hanging", () =>
   withDir(async (dir) => {
     const file = path.join(dir, "broken.png");
-    await fs.writeFile(file, Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(4096, 7)]));
+    await fs.writeFile(
+      file,
+      Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(4096, 7)]),
+    );
     await assert.rejects(makeInlineImage(file, 1024));
   }));
 

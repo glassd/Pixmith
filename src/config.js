@@ -75,7 +75,11 @@ function envBool(name, fallback) {
 export function parseAllowedDirs(raw, warnings = configWarnings, delimiter = path.delimiter) {
   if (raw == null || raw.trim() === "") return null;
   const dirs = [];
-  for (const entry of raw.split(delimiter).map((e) => e.trim()).filter(Boolean)) {
+  const entries = raw
+    .split(delimiter)
+    .map((e) => e.trim())
+    .filter(Boolean);
+  for (const entry of entries) {
     if (path.isAbsolute(entry)) dirs.push(path.resolve(entry));
     else warnings.push(`PIXMITH_ALLOWED_DIRS entry "${entry}" is not an absolute path and was ignored.`);
   }
@@ -156,12 +160,7 @@ function codexCandidates() {
     ];
   }
   // linux and others
-  return [
-    "/usr/local/bin/codex",
-    "/usr/bin/codex",
-    path.join(HOME, ".local/bin/codex"),
-    path.join(HOME, "bin/codex"),
-  ];
+  return ["/usr/local/bin/codex", "/usr/bin/codex", path.join(HOME, ".local/bin/codex"), path.join(HOME, "bin/codex")];
 }
 
 const looksLikePath = (p) => path.isAbsolute(p) || p.includes("/") || p.includes("\\");
@@ -219,10 +218,7 @@ export const config = {
 
   // Where images land by default when the caller does not pass output_dir.
   // Resolved against the project root so a relative override still works.
-  defaultOutputDir: path.resolve(
-    PROJECT_ROOT,
-    envStr("PIXMITH_OUTPUT_DIR", DEFAULT_DIRS.images),
-  ),
+  defaultOutputDir: path.resolve(PROJECT_ROOT, envStr("PIXMITH_OUTPUT_DIR", DEFAULT_DIRS.images)),
 
   // Folders output_dir may point into (see parseAllowedDirs); null = any.
   // defaultOutputDir is always allowed.
@@ -297,7 +293,8 @@ export const config = {
   // "remove" deletes it once Pixmith's copy is saved; "keep" (default) leaves
   // Codex's folder alone, since the Codex app may show those files.
   // A Claude Desktop bundle's checkbox sends "true"/"false", which mean remove/keep.
-  codexCopies: { true: "remove", false: "keep" }[readEnv("PIXMITH_CODEX_COPIES")?.toLowerCase()] ??
+  codexCopies:
+    { true: "remove", false: "keep" }[readEnv("PIXMITH_CODEX_COPIES")?.toLowerCase()] ??
     envChoice("PIXMITH_CODEX_COPIES", ["keep", "remove"], "keep"),
 
   // Write <image>.json beside every PNG: the prompt, sizes, source and
@@ -361,9 +358,7 @@ export function normalizeSize(size) {
   const w = Math.max(step, Math.round(reqW / step) * step);
   const h = Math.max(step, Math.round(reqH / step) * step);
   const note =
-    w !== reqW || h !== reqH
-      ? `rounded ${reqW}x${reqH} to ${w}x${h} (each edge must be a multiple of ${step})`
-      : "";
+    w !== reqW || h !== reqH ? `rounded ${reqW}x${reqH} to ${w}x${h} (each edge must be a multiple of ${step})` : "";
 
   const problems = [];
   if (w > maxEdge || h > maxEdge) problems.push(`the longest edge may be at most ${maxEdge}px`);
@@ -371,10 +366,14 @@ export function normalizeSize(size) {
   if (ratio > maxRatio) problems.push(`the aspect ratio may be at most ${maxRatio}:1 (got ${ratio.toFixed(2)}:1)`);
   const pixels = w * h;
   if (pixels < minPixels) {
-    problems.push(`too few pixels (${pixels.toLocaleString("en-US")} < ${minPixels.toLocaleString("en-US")}; try 1024x1024 or larger)`);
+    problems.push(
+      `too few pixels (${pixels.toLocaleString("en-US")} < ${minPixels.toLocaleString("en-US")}; try 1024x1024 or larger)`,
+    );
   }
   if (pixels > maxPixels) {
-    problems.push(`too many pixels (${pixels.toLocaleString("en-US")} > ${maxPixels.toLocaleString("en-US")}; 3840x2160 is the largest)`);
+    problems.push(
+      `too many pixels (${pixels.toLocaleString("en-US")} > ${maxPixels.toLocaleString("en-US")}; 3840x2160 is the largest)`,
+    );
   }
 
   if (problems.length) {

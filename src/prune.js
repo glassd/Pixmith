@@ -16,7 +16,9 @@ async function statOrNull(p) {
 }
 
 async function sha256(p) {
-  return createHash("sha256").update(await fs.readFile(p)).digest("hex");
+  return createHash("sha256")
+    .update(await fs.readFile(p))
+    .digest("hex");
 }
 
 /** How many of Codex's copies of Pixmith images are still on disk, and their size. */

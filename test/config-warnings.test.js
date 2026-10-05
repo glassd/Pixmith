@@ -14,7 +14,15 @@ test("settings passed to the Codex command line are validated, and rejects are r
   assert.equal(config.creditsPolicy, "ask", "an unknown credits policy falls back to asking");
   assert.equal(config.sandbox, "workspace-write", "an unknown sandbox mode falls back to workspace-write");
   assert.equal(configWarnings.length, 3);
-  assert.ok(configWarnings.some((w) => /PIXMITH_CODEX_MODEL="bad model; rm -rf" is not a valid value and was ignored/.test(w)));
-  assert.ok(configWarnings.some((w) => /PIXMITH_SANDBOX=".*" is not one of read-only, workspace-write, danger-full-access/.test(w)));
-  assert.ok(configWarnings.some((w) => /PIXMITH_USE_CREDITS="sometimes" is not one of ask, always, never; using "ask"/.test(w)));
+  assert.ok(
+    configWarnings.some((w) => /PIXMITH_CODEX_MODEL="bad model; rm -rf" is not a valid value and was ignored/.test(w)),
+  );
+  assert.ok(
+    configWarnings.some((w) =>
+      /PIXMITH_SANDBOX=".*" is not one of read-only, workspace-write, danger-full-access/.test(w),
+    ),
+  );
+  assert.ok(
+    configWarnings.some((w) => /PIXMITH_USE_CREDITS="sometimes" is not one of ask, always, never; using "ask"/.test(w)),
+  );
 });

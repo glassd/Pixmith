@@ -15,7 +15,14 @@ const PNG = Buffer.concat([
   Buffer.alloc(64, 0),
 ]);
 
-async function setup({ pollWaitMs = 60, finishGraceMs = 0, generate, usage = null, creditsPolicy = "ask", maxInlineBytes = 1024 * 1024 } = {}) {
+async function setup({
+  pollWaitMs = 60,
+  finishGraceMs = 0,
+  generate,
+  usage = null,
+  creditsPolicy = "ask",
+  maxInlineBytes = 1024 * 1024,
+} = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pixmith-tools-"));
   const out = path.join(dir, "out.png");
   await fs.writeFile(out, PNG);
@@ -43,7 +50,17 @@ async function setup({ pollWaitMs = 60, finishGraceMs = 0, generate, usage = nul
     inputImages: [],
     ...extra,
   });
-  return { dir, out, jobs, tools, call, calls, result, usageCalls, cleanup: () => fs.rm(dir, { recursive: true, force: true }) };
+  return {
+    dir,
+    out,
+    jobs,
+    tools,
+    call,
+    calls,
+    result,
+    usageCalls,
+    cleanup: () => fs.rm(dir, { recursive: true, force: true }),
+  };
 }
 
 /**
@@ -58,20 +75,20 @@ async function startedCall(t, i = 0) {
   return t.calls[i];
 }
 
-const textOf = (res) => res.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
+const textOf = (res) =>
+  res.content
+    .filter((c) => c.type === "text")
+    .map((c) => c.text)
+    .join("\n");
 const jobIdOf = (res) => textOf(res).match(/job_id: (\S+)/)?.[1];
 
 test("tools: the six tools are listed with schemas", async () => {
   const t = await setup();
   try {
-    assert.deepEqual(t.tools.map((x) => x.name), [
-      "generate_image",
-      "edit_image",
-      "get_image_result",
-      "cancel_image",
-      "list_images",
-      "pixmith_status",
-    ]);
+    assert.deepEqual(
+      t.tools.map((x) => x.name),
+      ["generate_image", "edit_image", "get_image_result", "cancel_image", "list_images", "pixmith_status"],
+    );
     assert.deepEqual(t.tools[1].inputSchema.required, ["image", "prompt"]);
     assert.equal(t.tools[2].inputSchema.required, undefined, "job_id is optional");
   } finally {
@@ -253,8 +270,14 @@ test("usage: every finished result reports plan usage, with a warning near the l
     const pending = t.call("generate_image", { prompt: "a fox" });
     (await startedCall(t)).resolve(t.result({ sessionId: "abc" }));
     const out = textOf(await pending);
-    assert.match(out, /Plan usage: 86% of the 5-hour limit \(resets (?:\w{3} )?at \d\d:\d\d\), 3% of the weekly limit \(resets \w{3} at \d\d:\d\d\)\./);
-    assert.match(out, /Usage warning: the 5-hour limit is nearly used up\. After that, jobs stop until the limit resets/);
+    assert.match(
+      out,
+      /Plan usage: 86% of the 5-hour limit \(resets (?:\w{3} )?at \d\d:\d\d\), 3% of the weekly limit \(resets \w{3} at \d\d:\d\d\)\./,
+    );
+    assert.match(
+      out,
+      /Usage warning: the 5-hour limit is nearly used up\. After that, jobs stop until the limit resets/,
+    );
     assert.match(out, /Settings > Usage/);
     assert.deepEqual(t.usageCalls.at(-1), { sessionId: "abc" }, "the job's own session log is preferred");
     const reads = t.usageCalls.length;
@@ -266,7 +289,12 @@ test("usage: every finished result reports plan usage, with a warning near the l
 });
 
 test("usage: a missing or failing usage reader never affects a job", async () => {
-  const t = await setup({ pollWaitMs: 2000, usage: () => { throw new Error("unreadable"); } });
+  const t = await setup({
+    pollWaitMs: 2000,
+    usage: () => {
+      throw new Error("unreadable");
+    },
+  });
   try {
     const pending = t.call("generate_image", { prompt: "a fox" });
     (await startedCall(t)).resolve(t.result());
@@ -283,12 +311,18 @@ test("credits: once the plan limit is used up, a job needs the user's consent", 
   try {
     const refused = await t.call("generate_image", { prompt: "a fox" });
     assert.equal(refused.isError, true);
-    assert.match(textOf(refused), /\[credits_confirmation_needed\] Your ChatGPT plan's 5-hour limit for Codex is used up; it resets (?:\w{3} )?at \d\d:\d\d\./);
+    assert.match(
+      textOf(refused),
+      /\[credits_confirmation_needed\] Your ChatGPT plan's 5-hour limit for Codex is used up; it resets (?:\w{3} )?at \d\d:\d\d\./,
+    );
     assert.match(textOf(refused), /250 credits available, and Codex would spend them/);
     assert.match(textOf(refused), /call the tool again with use_credits: true/);
     assert.equal(t.calls.length, 0, "no job was started");
     assert.match(textOf(await t.call("edit_image", { image: t.out, prompt: "x" })), /credits_confirmation_needed/);
-    assert.match(textOf(await t.call("generate_image", { prompt: "x", use_credits: "yes" })), /`use_credits` must be true or false/);
+    assert.match(
+      textOf(await t.call("generate_image", { prompt: "x", use_credits: "yes" })),
+      /`use_credits` must be true or false/,
+    );
 
     const agreed = await t.call("generate_image", { prompt: "a fox", use_credits: true, wait: false });
     assert.match(textOf(agreed), /status: running/);
@@ -328,7 +362,10 @@ test("usage: an edit result reports plan usage too, keyed to the edit's own sess
     assert.match(out, /Image edited in \d+s/);
     assert.match(out, /Edited from: /);
     assert.match(out, /Plan usage: 91% of the 5-hour limit/);
-    assert.match(out, /Usage warning: the 5-hour limit is nearly used up\. After that, jobs run on paid credits \(40 credits available\)/);
+    assert.match(
+      out,
+      /Usage warning: the 5-hour limit is nearly used up\. After that, jobs run on paid credits \(40 credits available\)/,
+    );
     assert.deepEqual(t.usageCalls.at(-1), { sessionId: "edit-session" });
     // The usage lines sit before the closing edit hint, so the hint stays the last thing the assistant reads.
     assert.ok(out.indexOf("Plan usage:") < out.indexOf("To change this image"));
@@ -367,7 +404,10 @@ test("inline image: a large PNG is returned as a preview and the whole result st
     assert.ok(JSON.stringify(res).length < 1_000_000, `result is ${JSON.stringify(res).length} bytes`);
     const image = res.content.find((c) => c.type === "image");
     assert.equal(image.mimeType, "image/jpeg");
-    assert.match(textOf(res), /Inline preview: \d+x\d+ JPEG, sized to fit the client's tool-result limit\. The full-quality PNG is at the path above\./);
+    assert.match(
+      textOf(res),
+      /Inline preview: \d+x\d+ JPEG, sized to fit the client's tool-result limit\. The full-quality PNG is at the path above\./,
+    );
     assert.match(textOf(res), new RegExp(`Bytes: ${data.length}`), "the reported size is still the real PNG's");
     assert.ok(textOf(res).indexOf("Inline preview") < textOf(res).indexOf("To change this image"));
 
@@ -389,7 +429,10 @@ test("inline image: a file that cannot be previewed degrades to a note, never an
     assert.equal(res.isError, undefined);
     assert.match(textOf(res), /status: done/);
     assert.match(textOf(res), /\(Could not inline image: .*Open it from the path above\.\)/);
-    assert.equal(res.content.some((c) => c.type === "image"), false);
+    assert.equal(
+      res.content.some((c) => c.type === "image"),
+      false,
+    );
   } finally {
     await t.cleanup();
   }

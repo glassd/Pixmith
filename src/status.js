@@ -114,8 +114,15 @@ export async function checkStatus({
     // there is the best remaining hint; the file itself is never read.
     const authFile = path.join(config.codexHome, "auth.json");
     signIn = (await exists(authFile))
-      ? { state: "unknown", detail: "This Codex cannot report its sign-in, but its credentials file exists, so it is probably signed in." }
-      : { state: "unknown", detail: "This Codex cannot report its sign-in, and no credentials file was found; it is probably not signed in." };
+      ? {
+          state: "unknown",
+          detail: "This Codex cannot report its sign-in, but its credentials file exists, so it is probably signed in.",
+        }
+      : {
+          state: "unknown",
+          detail:
+            "This Codex cannot report its sign-in, and no credentials file was found; it is probably not signed in.",
+        };
   }
   if (signIn.state === "signed_out") {
     problems.push({
@@ -151,7 +158,9 @@ export async function checkStatus({
     });
   }
   if (!stateOk) {
-    warnings.push(`Pixmith's state folder ${config.stateDir} cannot be written to, so time estimates and the image history are not saved.`);
+    warnings.push(
+      `Pixmith's state folder ${config.stateDir} cannot be written to, so time estimates and the image history are not saved.`,
+    );
   }
 
   const counts = jobs?.counts?.() ?? { running: 0, queued: 0 };

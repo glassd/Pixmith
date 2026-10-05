@@ -17,7 +17,11 @@ async function withDir(fn) {
 }
 
 /** A finished job as JobManager leaves it, with a real PNG file on disk. */
-async function finishedJob(dir, n, { mode = "generate", prompt = `image ${n}`, finishedAt = Date.UTC(2026, 9, 5, 12, n) } = {}) {
+async function finishedJob(
+  dir,
+  n,
+  { mode = "generate", prompt = `image ${n}`, finishedAt = Date.UTC(2026, 9, 5, 12, n) } = {},
+) {
   const file = path.join(dir, `img-${n}.png`);
   await fs.writeFile(file, "png");
   return {
@@ -54,11 +58,20 @@ test("ImageHistory: lists newest first, filters by prompt and mode, and skips de
     await fs.rm(path.join(dir, "img-4.png"));
 
     const all = await history.list();
-    assert.deepEqual(all.images.map((e) => e.job_id), ["job-3", "job-2", "job-1"]);
+    assert.deepEqual(
+      all.images.map((e) => e.job_id),
+      ["job-3", "job-2", "job-1"],
+    );
     assert.equal(all.total, 3, "a deleted image is not counted");
 
-    assert.deepEqual((await history.list({ query: "FOX" })).images.map((e) => e.job_id), ["job-3", "job-1"]);
-    assert.deepEqual((await history.list({ mode: "edit" })).images.map((e) => e.job_id), ["job-3"]);
+    assert.deepEqual(
+      (await history.list({ query: "FOX" })).images.map((e) => e.job_id),
+      ["job-3", "job-1"],
+    );
+    assert.deepEqual(
+      (await history.list({ mode: "edit" })).images.map((e) => e.job_id),
+      ["job-3"],
+    );
     const limited = await history.list({ limit: 1 });
     assert.deepEqual([limited.images.map((e) => e.job_id), limited.total], [["job-3"], 3]);
   }));
@@ -68,7 +81,7 @@ test("ImageHistory: find returns the newest entry for a job, and damaged lines a
     const file = path.join(dir, "history.jsonl");
     const history = new ImageHistory({ file });
     await history.record(await finishedJob(dir, 1));
-    await fs.appendFile(file, "not json\n{\"no\":\"path\"}\n");
+    await fs.appendFile(file, 'not json\n{"no":"path"}\n');
     await history.record(await finishedJob(dir, 2));
 
     assert.equal((await history.entries()).length, 2);
@@ -83,8 +96,15 @@ test("ImageHistory: trims to the newest maxEntries once well past the cap", () =
     await history.writing;
     assert.equal((await history.entries()).length, 6, "up to 1.5x the cap is kept untrimmed");
     await history.record(await finishedJob(dir, 7));
-    assert.deepEqual((await history.entries()).map((e) => e.job_id), ["job-4", "job-5", "job-6", "job-7"]);
-    assert.deepEqual((await fs.readdir(dir)).filter((f) => f.endsWith(".tmp")), [], "no temporary files are left behind");
+    assert.deepEqual(
+      (await history.entries()).map((e) => e.job_id),
+      ["job-4", "job-5", "job-6", "job-7"],
+    );
+    assert.deepEqual(
+      (await fs.readdir(dir)).filter((f) => f.endsWith(".tmp")),
+      [],
+      "no temporary files are left behind",
+    );
   }));
 
 test("ImageHistory: without a file, or with an unwritable one, nothing fails", () =>
@@ -131,5 +151,8 @@ test("JobManager: a finished job is recorded in the history; a failed one is not
   await ok.settled;
   const bad = jobs.create({ prompt: "b" });
   await bad.settled;
-  assert.deepEqual(recorded.map((j) => [j.id, j.status]), [[ok.id, "done"]]);
+  assert.deepEqual(
+    recorded.map((j) => [j.id, j.status]),
+    [[ok.id, "done"]],
+  );
 });

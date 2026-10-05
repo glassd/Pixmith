@@ -99,7 +99,8 @@ async function connect({
 
 /** Every field the result carries must be declared in the schema (the client only checks declared ones). */
 function assertDeclared(data, schema) {
-  for (const key of Object.keys(data)) assert.ok(key in schema.properties, `"${key}" is not declared in the output schema`);
+  for (const key of Object.keys(data))
+    assert.ok(key in schema.properties, `"${key}" is not declared in the output schema`);
 }
 
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
@@ -144,7 +145,10 @@ test("structured output: a finished image carries its path, size, inline image a
     assert.match(data.job_id, /^[0-9a-f-]{36}$/);
     assert.equal(data.mode, "generate");
     assert.equal(data.path, t.png);
-    assert.deepEqual([data.size, data.width, data.height, data.requested_size, data.bytes], ["64x48", 64, 48, "1024x1024", 1234]);
+    assert.deepEqual(
+      [data.size, data.width, data.height, data.requested_size, data.bytes],
+      ["64x48", 64, 48, "1024x1024", 1234],
+    );
     assert.equal(data.codex_copy, "/codex/home/ig_1.png");
     assert.equal(data.metadata_path, "/abs/images/out.json");
     assert.match(res.content[0].text, /^Metadata: \/abs\/images\/out\.json$/m);
@@ -166,7 +170,8 @@ test("structured output: a finished image carries its path, size, inline image a
 test("structured output: queued and running jobs, then collection with get_image_result", async () => {
   const t = await connect();
   try {
-    const first = (await t.callTool("generate_image", { prompt: "one", wait: false, size: "1000x1000" })).structuredContent;
+    const first = (await t.callTool("generate_image", { prompt: "one", wait: false, size: "1000x1000" }))
+      .structuredContent;
     const second = (await t.callTool("generate_image", { prompt: "two", wait: false })).structuredContent;
     assertDeclared(first, JOB_OUTPUT_SCHEMA);
     assert.equal(first.status, "running");
@@ -207,7 +212,12 @@ test("structured output: cancel_image reports what it did", async () => {
 
     const dropped = (await t.callTool("cancel_image", { job_id: queued.job_id })).structuredContent;
     assertDeclared(dropped, CANCEL_OUTPUT_SCHEMA);
-    assert.deepEqual(dropped, { status: "cancelled", job_id: queued.job_id, cancel_requested: true, previous_status: "queued" });
+    assert.deepEqual(dropped, {
+      status: "cancelled",
+      job_id: queued.job_id,
+      cancel_requested: true,
+      previous_status: "queued",
+    });
 
     const stopped = (await t.callTool("cancel_image", { job_id: running.job_id })).structuredContent;
     assert.equal(stopped.status, "cancelled");
@@ -294,7 +304,12 @@ test("list_images: earlier images, newest first, filtered by prompt and mode", a
   try {
     const fox = await finish(t, "generate_image", { prompt: "a red fox" }, t.result());
     const whale = await finish(t, "generate_image", { prompt: "a blue whale" }, t.result());
-    const night = await finish(t, "edit_image", { image: t.png, prompt: "make the FOX night" }, t.result({ inputImages: [t.png] }));
+    const night = await finish(
+      t,
+      "edit_image",
+      { image: t.png, prompt: "make the FOX night" },
+      t.result({ inputImages: [t.png] }),
+    );
 
     const res = await t.callTool("list_images");
     const data = res.structuredContent;
@@ -302,7 +317,10 @@ test("list_images: earlier images, newest first, filtered by prompt and mode", a
     data.images.forEach((img) => assertDeclared(img, LIST_OUTPUT_SCHEMA.properties.images.items));
     assert.equal(data.status, "ok");
     assert.equal(data.total, 3);
-    assert.deepEqual(data.images.map((i) => i.job_id), [night.job_id, whale.job_id, fox.job_id]);
+    assert.deepEqual(
+      data.images.map((i) => i.job_id),
+      [night.job_id, whale.job_id, fox.job_id],
+    );
     assert.deepEqual(
       { ...data.images[0], created_at: undefined },
       {
@@ -325,9 +343,15 @@ test("list_images: earlier images, newest first, filtered by prompt and mode", a
 
     const foxes = (await t.callTool("list_images", { query: "fox", limit: 1 })).structuredContent;
     assert.deepEqual([foxes.total, foxes.images.map((i) => i.job_id)], [2, [night.job_id]]);
-    assert.match((await t.callTool("list_images", { query: "fox", limit: 1 })).content[0].text, /^2 images \(matching "fox"\), showing the newest 1:/);
+    assert.match(
+      (await t.callTool("list_images", { query: "fox", limit: 1 })).content[0].text,
+      /^2 images \(matching "fox"\), showing the newest 1:/,
+    );
     const generated = (await t.callTool("list_images", { mode: "generate" })).structuredContent;
-    assert.deepEqual(generated.images.map((i) => i.job_id), [whale.job_id, fox.job_id]);
+    assert.deepEqual(
+      generated.images.map((i) => i.job_id),
+      [whale.job_id, fox.job_id],
+    );
 
     const none = await t.callTool("list_images", { query: "zebra" });
     assert.deepEqual(none.structuredContent, { status: "ok", images: [], total: 0 });
@@ -403,10 +427,19 @@ test("variants: one call starts several jobs and returns them together, sharing 
     assert.equal(data.status, "done");
     assert.equal(data.job_id, undefined);
     assert.equal(data.job_ids.length, 3);
-    assert.deepEqual(data.variants.map((v) => [v.status, v.job_id]), data.job_ids.map((id) => ["done", id]));
-    assert.ok(data.variants.every((v) => v.inline_image.preview), "each variant's preview is shrunk to its slice");
+    assert.deepEqual(
+      data.variants.map((v) => [v.status, v.job_id]),
+      data.job_ids.map((id) => ["done", id]),
+    );
+    assert.ok(
+      data.variants.every((v) => v.inline_image.preview),
+      "each variant's preview is shrunk to its slice",
+    );
     assert.equal(data.usage.plan, "plus");
-    assert.deepEqual(t.calls.map((c) => c.args.filename), ["fox-1", "fox-2", "fox-3"]);
+    assert.deepEqual(
+      t.calls.map((c) => c.args.filename),
+      ["fox-1", "fox-2", "fox-3"],
+    );
 
     assert.equal(res.content.filter((c) => c.type === "image").length, 3);
     const text = res.content[0].text;
@@ -422,9 +455,13 @@ test("variants: one call starts several jobs and returns them together, sharing 
 test("variants: partial results, failures, and collecting each variant on its own", async () => {
   const t = await connect({ pollWaitMs: 3000 });
   try {
-    const started = (await t.callTool("generate_image", { prompt: "a fox", variants: 2, wait: false })).structuredContent;
+    const started = (await t.callTool("generate_image", { prompt: "a fox", variants: 2, wait: false }))
+      .structuredContent;
     assert.equal(started.status, "running");
-    assert.deepEqual(started.variants.map((v) => v.status), ["running", "queued"]);
+    assert.deepEqual(
+      started.variants.map((v) => v.status),
+      ["running", "queued"],
+    );
 
     await settleInOrder(t, [new PixmithError("generation_failed", "refused"), t.result()]);
     const second = (await t.callTool("get_image_result", { job_id: started.job_ids[1] })).structuredContent;
@@ -475,7 +512,13 @@ test("background: the option reaches the job, and a missing alpha channel is rep
 test("generation options: bad values are refused before any job starts", async () => {
   const t = await connect();
   try {
-    for (const args of [{ variants: 5 }, { variants: 1.5 }, { background: "clear" }, { filename: "a/b" }, { filename: "!!!" }]) {
+    for (const args of [
+      { variants: 5 },
+      { variants: 1.5 },
+      { background: "clear" },
+      { filename: "a/b" },
+      { filename: "!!!" },
+    ]) {
       const res = await t.callTool("generate_image", { prompt: "a fox", ...args });
       assert.equal(res.structuredContent.error.kind, "bad_request", JSON.stringify(args));
     }
@@ -489,7 +532,12 @@ test("pixmith_status: reports readiness, and each problem with its next step", a
   const fakeCodex = (login) => async (args) =>
     args[0] === "--version"
       ? { code: 0, stdout: "codex-cli 0.46.0\n", stderr: "", error: null }
-      : { code: login === "out" ? 1 : 0, stdout: "", stderr: login === "out" ? "Not logged in\n" : "Logged in using ChatGPT\n", error: null };
+      : {
+          code: login === "out" ? 1 : 0,
+          stdout: "",
+          stderr: login === "out" ? "Not logged in\n" : "Logged in using ChatGPT\n",
+          error: null,
+        };
 
   const ready = await connect({ runCodexCommand: fakeCodex("chatgpt") });
   try {
@@ -506,13 +554,20 @@ test("pixmith_status: reports readiness, and each problem with its next step", a
     assert.match(text, /^Codex: version 0\.46\.0 at /m);
     assert.match(text, /^Signed in: yes, with a ChatGPT account$/m);
     assert.match(text, /^Plan usage: 85% of the 5-hour limit/m);
-    assert.match(text, /^Settings: up to 1 job at a time, 0s wait window, 300s timeout, sandbox workspace-write, credits policy "ask"$/m);
+    assert.match(
+      text,
+      /^Settings: up to 1 job at a time, 0s wait window, 300s timeout, sandbox workspace-write, credits policy "ask"$/m,
+    );
     assert.doesNotMatch(text, /Problems:|Warnings:/);
   } finally {
     await ready.close();
   }
 
-  const broken = await connect({ runCodexCommand: fakeCodex("out"), usage: null, configWarnings: ["PIXMITH_X was ignored."] });
+  const broken = await connect({
+    runCodexCommand: fakeCodex("out"),
+    usage: null,
+    configWarnings: ["PIXMITH_X was ignored."],
+  });
   try {
     const res = await broken.callTool("pixmith_status");
     assert.equal(res.isError, undefined, "a problem found is a result, not a failed call");
@@ -533,11 +588,18 @@ test("allowed folders: output_dir outside them is refused before any job, and th
     args[0] === "--version"
       ? { code: 0, stdout: "codex-cli 0.46.0", stderr: "", error: null }
       : { code: 0, stdout: "", stderr: "Logged in using ChatGPT", error: null };
-  const t = await connect({ allowedDirs: (dir) => [path.join(dir, "allowed")], runCodexCommand: fakeCodex, pollWaitMs: 2000 });
+  const t = await connect({
+    allowedDirs: (dir) => [path.join(dir, "allowed")],
+    runCodexCommand: fakeCodex,
+    pollWaitMs: 2000,
+  });
   try {
     const allowed = path.join(t.dir, "allowed");
-    const description = t.tools.find((tool) => tool.name === "generate_image").inputSchema.properties.output_dir.description;
-    assert.ok(description.endsWith(` Must be inside one of: ${path.join(t.dir, "images")}, ${allowed} (PIXMITH_ALLOWED_DIRS).`));
+    const description = t.tools.find((tool) => tool.name === "generate_image").inputSchema.properties.output_dir
+      .description;
+    assert.ok(
+      description.endsWith(` Must be inside one of: ${path.join(t.dir, "images")}, ${allowed} (PIXMITH_ALLOWED_DIRS).`),
+    );
 
     const refused = await t.callTool("generate_image", { prompt: "a fox", output_dir: path.join(t.dir, "elsewhere") });
     assert.equal(refused.isError, true);
@@ -552,7 +614,10 @@ test("allowed folders: output_dir outside them is refused before any job, and th
 
     const status = await t.callTool("pixmith_status");
     assert.deepEqual(status.structuredContent.settings.allowed_dirs, [path.join(t.dir, "images"), allowed]);
-    assert.match(status.content[0].text, new RegExp(`^Folders output_dir may use: .*${allowed.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}$`, "m"));
+    assert.match(
+      status.content[0].text,
+      new RegExp(`^Folders output_dir may use: .*${allowed.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}$`, "m"),
+    );
   } finally {
     await t.close();
   }
@@ -563,9 +628,14 @@ test("pixmith_status: points out Codex's duplicate copies and how to delete them
   const historyFile = path.join(state, "history.jsonl");
   const copy = path.join(state, "ig_1.png");
   await fs.writeFile(copy, "12345");
-  await fs.writeFile(historyFile, `${JSON.stringify({ job_id: "j1", path: path.join(state, "own.png"), codex_copy: copy })}\n`);
+  await fs.writeFile(
+    historyFile,
+    `${JSON.stringify({ job_id: "j1", path: path.join(state, "own.png"), codex_copy: copy })}\n`,
+  );
   const fakeCodex = async (args) =>
-    args[0] === "--version" ? { code: 0, stdout: "codex-cli 0.46.0", stderr: "", error: null } : { code: 0, stdout: "", stderr: "Logged in using ChatGPT", error: null };
+    args[0] === "--version"
+      ? { code: 0, stdout: "codex-cli 0.46.0", stderr: "", error: null }
+      : { code: 0, stdout: "", stderr: "Logged in using ChatGPT", error: null };
   const t = await connect({ historyFile, runCodexCommand: fakeCodex });
   try {
     const res = await t.callTool("pixmith_status");

@@ -54,7 +54,8 @@ test("parseMarker: only the last non-empty line counts", () => {
 });
 
 test("parseSessionId: finds the uuid in the codex banner", () => {
-  const banner = "OpenAI Codex v0.140.0\n--------\nworkdir: /x\nsession id: 019ED294-A1BF-7E92-929F-59D20770D2D9\n--------\n";
+  const banner =
+    "OpenAI Codex v0.140.0\n--------\nworkdir: /x\nsession id: 019ED294-A1BF-7E92-929F-59D20770D2D9\n--------\n";
   assert.equal(parseSessionId(banner), "019ed294-a1bf-7e92-929f-59d20770d2d9");
   assert.equal(parseSessionId("no id here"), null);
   assert.equal(parseSessionId(""), null);
@@ -128,8 +129,14 @@ test("readPngDimensions: reads width/height from IHDR, null otherwise", async ()
 
 test("generateImage: rejects bad input before touching codex", async () => {
   await assert.rejects(generateImage({ prompt: "" }), (e) => e instanceof PixmithError && e.kind === "bad_request");
-  await assert.rejects(generateImage({ prompt: "x", size: "3840x3840" }), (e) => e.kind === "bad_request" && /too many pixels/.test(e.message));
-  await assert.rejects(generateImage({ prompt: "x", outputDir: "relative/dir" }), (e) => e.kind === "bad_request" && /absolute/.test(e.message));
+  await assert.rejects(
+    generateImage({ prompt: "x", size: "3840x3840" }),
+    (e) => e.kind === "bad_request" && /too many pixels/.test(e.message),
+  );
+  await assert.rejects(
+    generateImage({ prompt: "x", outputDir: "relative/dir" }),
+    (e) => e.kind === "bad_request" && /absolute/.test(e.message),
+  );
 });
 
 test("buildPrompt: edit mode labels the attached images and keeps the contract", () => {
@@ -196,7 +203,8 @@ test("detectImageType + validateInputImages: sniff real types and reject bad inp
 
     assert.deepEqual(await validateInputImages(undefined), []);
     assert.deepEqual(await validateInputImages([at("a.png"), ` ${at("b.jpg")} `]), [at("a.png"), at("b.jpg")]);
-    const bad = (input, re) => assert.rejects(validateInputImages(input), (e) => e.kind === "bad_request" && re.test(e.message));
+    const bad = (input, re) =>
+      assert.rejects(validateInputImages(input), (e) => e.kind === "bad_request" && re.test(e.message));
     await bad("a.png", /array/);
     await bad(["a.png"], /absolute/);
     await bad([at("missing.png")], /not found/);
@@ -206,7 +214,10 @@ test("detectImageType + validateInputImages: sniff real types and reject bad inp
     await bad(Array(5).fill(at("a.png")), /At most 4/);
 
     // generateImage rejects these before any Codex session starts.
-    await assert.rejects(generateImage({ prompt: "x", mode: "edit" }), (e) => e.kind === "bad_request" && /needs the image/.test(e.message));
+    await assert.rejects(
+      generateImage({ prompt: "x", mode: "edit" }),
+      (e) => e.kind === "bad_request" && /needs the image/.test(e.message),
+    );
     await assert.rejects(generateImage({ prompt: "x", mode: "remix" }), (e) => e.kind === "bad_request");
     const aborted = AbortSignal.abort();
     await assert.rejects(generateImage({ prompt: "x", signal: aborted }), (e) => e.kind === "cancelled");
@@ -264,11 +275,26 @@ test("isCompletePng: needs both the PNG signature and the IEND trailer", async (
 
 test("cmdShellCommand: quotes spaced arguments and refuses anything cmd.exe would interpret", () => {
   const bin = "C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd";
-  const { command, args } = cmdShellCommand(bin, ["-C", "C:\\My Images (v2)", "-c", 'model_reasoning_effort="low"', "-"]);
+  const { command, args } = cmdShellCommand(bin, [
+    "-C",
+    "C:\\My Images (v2)",
+    "-c",
+    'model_reasoning_effort="low"',
+    "-",
+  ]);
   assert.equal(command, bin);
   assert.deepEqual(args, ["-C", '"C:\\My Images (v2)"', "-c", '"model_reasoning_effort=\\"low\\""', "-"]);
 
-  for (const bad of ["C:\\out&calc", "C:\\a|b", "C:\\a>b", "C:\\a<b", "C:\\a^b", "C:\\%TEMP%\\x", "C:\\a!b", "C:\\a\nb"]) {
+  for (const bad of [
+    "C:\\out&calc",
+    "C:\\a|b",
+    "C:\\a>b",
+    "C:\\a<b",
+    "C:\\a^b",
+    "C:\\%TEMP%\\x",
+    "C:\\a!b",
+    "C:\\a\nb",
+  ]) {
     assert.throws(
       () => cmdShellCommand(bin, ["-C", bad]),
       (e) => e instanceof PixmithError && e.kind === "bad_request" && e.message.includes("CODEX_BIN"),
@@ -287,7 +313,11 @@ test("cleanFilename: keeps safe names, cleans the rest, refuses paths", () => {
   assert.equal(cleanFilename("con"), "con-image", "a Windows device name is never used as is");
   assert.equal(cleanFilename("x".repeat(150)).length, 100);
   for (const bad of ["../escape", "a/b", "C:\\temp\\x", "!!!", "日本", "   ", 42]) {
-    assert.throws(() => cleanFilename(bad), (e) => e instanceof PixmithError && e.kind === "bad_request", String(bad));
+    assert.throws(
+      () => cleanFilename(bad),
+      (e) => e instanceof PixmithError && e.kind === "bad_request",
+      String(bad),
+    );
   }
 });
 
@@ -310,7 +340,10 @@ test("pngHasAlpha: colour types with alpha, a tRNS chunk, and non-PNGs", async (
     const rgb = PNG.sync.write(img, { colorType: 2 });
     const idat = rgb.indexOf(Buffer.from("IDAT")) - 4;
     const trns = Buffer.concat([Buffer.from([0, 0, 0, 6]), Buffer.from("tRNS"), Buffer.alloc(6), Buffer.alloc(4)]);
-    assert.equal(await pngHasAlpha(await write("trns.png", Buffer.concat([rgb.subarray(0, idat), trns, rgb.subarray(idat)]))), true);
+    assert.equal(
+      await pngHasAlpha(await write("trns.png", Buffer.concat([rgb.subarray(0, idat), trns, rgb.subarray(idat)]))),
+      true,
+    );
 
     assert.equal(await pngHasAlpha(await write("text.png", Buffer.from("not a png at all"))), null);
     assert.equal(await pngHasAlpha(path.join(dir, "missing.png")), null);
@@ -334,6 +367,9 @@ test("buildPrompt / fastPathPrompt: the background option", () => {
   assert.match(opaque, /do NOT use transparency\./);
 
   assert.match(fastPathPrompt("a logo", "auto"), /Opaque background unless the description asks for transparency\./);
-  assert.match(fastPathPrompt("a logo", "auto", "transparent"), /^Generate exactly ONE raster image\. Transparent background: a PNG with an alpha channel/);
+  assert.match(
+    fastPathPrompt("a logo", "auto", "transparent"),
+    /^Generate exactly ONE raster image\. Transparent background: a PNG with an alpha channel/,
+  );
   assert.match(fastPathPrompt("a logo", "auto", "opaque"), /Opaque background, with no transparency anywhere\./);
 });
