@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { normalizeSize } from "./config.js";
 import { PixmithError, STAGE_LABELS, validateInputImages, MAX_INPUT_IMAGES } from "./codex.js";
+import { jobFromEntry } from "./history.js";
 import { makeInlineImage } from "./preview.js";
 import { creditGate, readUsage as readCodexUsage, usageLines, usageSummary } from "./usage.js";
 
@@ -18,6 +19,9 @@ import { creditGate, readUsage as readCodexUsage, usageLines, usageSummary } fro
 //   get_image_result             picks up a job that needed longer (job_id
 //                                optional — defaults to the latest job).
 //   cancel_image                 stops a queued or running job.
+//   list_images                  lists earlier images from the history, newest
+//                                first (a finished job_id also stays collectable
+//                                through it after a restart).
 //
 // While a call waits, progress notifications carry the real stage reported by
 // Codex plus elapsed / expected time, for clients that display them.
@@ -104,6 +108,36 @@ export const JOB_OUTPUT_SCHEMA = {
   required: ["status"],
 };
 
+/** One image in list_images' output. */
+const LISTED_IMAGE_SCHEMA = {
+  type: "object",
+  properties: {
+    path: { type: "string", description: "Absolute path of the PNG." },
+    job_id: { type: "string" },
+    created_at: { type: "string", description: "ISO 8601 time the image was finished." },
+    mode: { type: "string", enum: ["generate", "edit"] },
+    prompt: { type: "string", description: "The image prompt, or an edit's instruction." },
+    size: { type: "string" },
+    width: { type: ["integer", "null"] },
+    height: { type: ["integer", "null"] },
+    source_image: { type: "string", description: "The image an edit was made from." },
+    metadata_path: { type: "string" },
+  },
+  required: ["path", "job_id", "created_at", "mode", "prompt"],
+};
+
+/** Output of list_images. */
+export const LIST_OUTPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    status: { type: "string", enum: ["ok", "error"] },
+    images: { type: "array", items: LISTED_IMAGE_SCHEMA, description: "Newest first." },
+    total: { type: "integer", description: "How many images match, of which `images` is the newest `limit`." },
+    error: ERROR_SCHEMA,
+  },
+  required: ["status"],
+};
+
 /** Output of cancel_image. */
 export const CANCEL_OUTPUT_SCHEMA = {
   type: "object",
@@ -126,7 +160,7 @@ const FINAL_STAGES = new Set(["finishing", "saving"]);
 
 const secs = (ms) => Math.max(0, Math.round(ms / 1000));
 
-export function createTools({ jobs, config, readUsage = readCodexUsage }) {
+export function createTools({ jobs, config, readUsage = readCodexUsage, history = null }) {
   // Usage reporting is best-effort: a failure to read Codex's logs must never
   // fail a job or hide its result.
   const safeUsage = async (opts) => {
@@ -243,7 +277,7 @@ export function createTools({ jobs, config, readUsage = readCodexUsage }) {
       'If the returned status is "queued" or "running", call this again — repeat until status is "done". ' +
       "On success it returns the saved absolute PNG path and, when small enough, the image inline. " +
       "job_id is optional: without it the most recent job is used, so a result can still be recovered if an earlier call timed out. " +
-      "Finished results stay available for 15 minutes.",
+      "A finished image's job_id keeps working later, even after a restart.",
     inputSchema: {
       type: "object",
       properties: {
@@ -267,6 +301,23 @@ export function createTools({ jobs, config, readUsage = readCodexUsage }) {
       additionalProperties: false,
     },
     ...outputSchema(CANCEL_OUTPUT_SCHEMA),
+  };
+
+  const LIST_TOOL = {
+    name: "list_images",
+    description:
+      "List images Pixmith made earlier, newest first, with each one's path, prompt, size and job_id — to find an earlier " +
+      "image again, e.g. to show it or to edit it with edit_image. Covers every output folder. Images deleted since are left out.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "integer", minimum: 1, maximum: 50, description: "Optional. How many to return, 1-50. Default 10." },
+        query: { type: "string", description: "Optional. Only images whose prompt contains this text (case-insensitive)." },
+        mode: { type: "string", enum: ["generate", "edit"], description: "Optional. Only generated, or only edited, images." },
+      },
+      additionalProperties: false,
+    },
+    ...outputSchema(LIST_OUTPUT_SCHEMA),
   };
 
   // ---- shared argument validation -------------------------------------------------
@@ -457,6 +508,8 @@ export function createTools({ jobs, config, readUsage = readCodexUsage }) {
     if (result.metadataPath) lines.push(`Metadata: ${result.metadataPath}`);
     // Read once per job: the figure describes the moment the job finished, and a
     // result can be fetched several times.
+    // A job restored from the history describes the past; today's usage would mislead.
+    if (job.restored) job.usageReport ??= { lines: [], summary: null };
     if (!job.usageReport) {
       const usage = await safeUsage({ sessionId: result.sessionId });
       const opts = { warnPercent: config.usageWarnPercent };
@@ -519,17 +572,24 @@ export function createTools({ jobs, config, readUsage = readCodexUsage }) {
 
   // ---- get_image_result / cancel_image --------------------------------------------------
 
-  function resolveJob(args, { activeOnly = false } = {}) {
+  async function resolveJob(args, { activeOnly = false } = {}) {
     const jobId = args.job_id;
     if (jobId != null && (typeof jobId !== "string" || !jobId.trim())) {
       throw new PixmithError("bad_request", "`job_id` must be a non-empty string when provided.");
     }
     if (jobId) {
-      const job = jobs.get(jobId.trim());
+      const id = jobId.trim();
+      let job = jobs.get(id);
+      // A finished image outlives its in-memory job (kept 15 minutes, and lost
+      // on a restart) through the history.
+      if (!job && history) {
+        const entry = await history.find(id);
+        if (entry) job = jobFromEntry(entry);
+      }
       if (!job) {
         throw new PixmithError(
           "unknown_job",
-          `No job found for job_id "${jobId}". It may have expired (results are kept for 15 minutes) — start a new one with generate_image.`,
+          `No job found for job_id "${jobId}". Call list_images to find earlier images, or start a new one with generate_image.`,
         );
       }
       return job;
@@ -545,13 +605,13 @@ export function createTools({ jobs, config, readUsage = readCodexUsage }) {
   }
 
   async function getResult(args, request, extra) {
-    const job = resolveJob(args);
+    const job = await resolveJob(args);
     await waitWithProgress(job, request, extra);
     return report(job);
   }
 
   async function cancel(args) {
-    const job = resolveJob(args, { activeOnly: args.job_id == null });
+    const job = await resolveJob(args, { activeOnly: args.job_id == null });
     const was = await jobs.cancel(job);
     if (was === null) {
       const note =
@@ -587,19 +647,68 @@ export function createTools({ jobs, config, readUsage = readCodexUsage }) {
     });
   }
 
+  async function listImages(args) {
+    const { limit = 10, query, mode } = args;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+      throw new PixmithError("bad_request", "`limit` must be a whole number from 1 to 50.");
+    }
+    if (query != null && typeof query !== "string") throw new PixmithError("bad_request", "`query` must be a string.");
+    if (mode != null && mode !== "generate" && mode !== "edit") {
+      throw new PixmithError("bad_request", '`mode` must be "generate" or "edit".');
+    }
+    const { images, total } = history ? await history.list({ limit, query: query?.trim() || null, mode }) : { images: [], total: 0 };
+
+    const listed = images.map((e) => ({
+      path: e.path,
+      job_id: e.job_id,
+      created_at: e.created_at,
+      mode: e.mode,
+      prompt: e.prompt,
+      size: e.size,
+      width: e.width,
+      height: e.height,
+      source_image: e.mode === "edit" ? e.input_images?.[0] : undefined,
+      metadata_path: e.metadata_path ?? undefined,
+    }));
+    const filters = [query?.trim() && `matching "${query.trim()}"`, mode && `${mode === "edit" ? "edited" : "generated"} only`].filter(Boolean);
+    const lines = [
+      total === 0
+        ? `No images found${filters.length ? ` (${filters.join(", ")})` : ""}.`
+        : `${total} image${total === 1 ? "" : "s"}${filters.length ? ` (${filters.join(", ")})` : ""}` +
+          (total > listed.length ? `, showing the newest ${listed.length}` : "") +
+          ":",
+    ];
+    listed.forEach((img, i) => {
+      const prompt = img.prompt.length > 200 ? `${img.prompt.slice(0, 200)}…` : img.prompt;
+      lines.push(
+        "",
+        `${i + 1}. ${img.created_at.slice(0, 16).replace("T", " ")} UTC · ${img.mode === "edit" ? "edited" : "generated"} · ${img.size}`,
+        `   Prompt: ${prompt}`,
+        `   Path: ${img.path}`,
+      );
+      if (img.source_image) lines.push(`   Edited from: ${img.source_image}`);
+      lines.push(`   job_id: ${img.job_id}`);
+    });
+    if (listed.length) {
+      lines.push("", "To change one, call edit_image with its Path. get_image_result with its job_id returns it again, with the image.");
+    }
+    return withData(text(lines), { status: "ok", images: listed, total });
+  }
+
   async function call(name, args = {}, request, extra) {
     try {
       if (name === GENERATE_TOOL.name) return await start(args, request, extra, { forEdit: false });
       if (name === EDIT_TOOL.name) return await start(args, request, extra, { forEdit: true });
       if (name === RESULT_TOOL.name) return await getResult(args, request, extra);
       if (name === CANCEL_TOOL.name) return await cancel(args);
+      if (name === LIST_TOOL.name) return await listImages(args);
       return errorResult(`Unknown tool: ${name}`);
     } catch (err) {
       return withData(errorResult(formatError(err)), errorData(err));
     }
   }
 
-  return { tools: [GENERATE_TOOL, EDIT_TOOL, RESULT_TOOL, CANCEL_TOOL], call };
+  return { tools: [GENERATE_TOOL, EDIT_TOOL, RESULT_TOOL, CANCEL_TOOL, LIST_TOOL], call };
 }
 
 function text(lines) {
