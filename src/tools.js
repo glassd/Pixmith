@@ -2,7 +2,15 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { normalizeSize } from "./config.js";
-import { BACKGROUNDS, PixmithError, STAGE_LABELS, cleanFilename, validateInputImages, MAX_INPUT_IMAGES } from "./codex.js";
+import {
+  BACKGROUNDS,
+  PixmithError,
+  STAGE_LABELS,
+  assertOutputDirAllowed,
+  cleanFilename,
+  validateInputImages,
+  MAX_INPUT_IMAGES,
+} from "./codex.js";
 import { jobFromEntry } from "./history.js";
 import { makeInlineImage } from "./preview.js";
 import { checkStatus as checkSetup } from "./status.js";
@@ -271,7 +279,10 @@ export function createTools({
     type: "string",
     description:
       "Optional. Absolute directory to save the PNG into. Defaults to Pixmith's images/ folder " +
-      "(override with the PIXMITH_OUTPUT_DIR env var).",
+      "(override with the PIXMITH_OUTPUT_DIR env var)." +
+      (config.allowedDirs
+        ? ` Must be inside one of: ${[config.defaultOutputDir, ...config.allowedDirs].join(", ")} (PIXMITH_ALLOWED_DIRS).`
+        : ""),
   };
   const waitProperty = {
     type: "boolean",
@@ -504,6 +515,9 @@ export function createTools({
       paths.push(...args.reference_images);
     }
     const images = await validateInputImages(paths);
+    if (common.outputDir) {
+      await assertOutputDirAllowed(common.outputDir, { allowedDirs: config.allowedDirs, defaultOutputDir: config.defaultOutputDir });
+    }
 
     // Plan limit already used up? Then this job would run on paid credits (or
     // simply fail), so it only starts with the user's say-so.
@@ -984,6 +998,7 @@ export function createTools({
     lines.push(...(usageText.length ? usageText : ["Plan usage: no recent figures (Codex records them during a session)."]));
     lines.push(
       `Output folder: ${r.output_dir.path} (${r.output_dir.writable ? "writable" : "NOT writable"})`,
+      `Folders output_dir may use: ${r.settings.allowed_dirs ? r.settings.allowed_dirs.join(", ") : "any (PIXMITH_ALLOWED_DIRS is not set)"}`,
       `Jobs: ${r.jobs.running} running, ${r.jobs.queued} queued`,
       `Settings: up to ${r.settings.max_concurrent} job${r.settings.max_concurrent === 1 ? "" : "s"} at a time, ` +
         `${r.settings.wait_seconds}s wait window, ${r.settings.timeout_seconds}s timeout, sandbox ${r.settings.sandbox}, ` +
@@ -1027,6 +1042,8 @@ const NEXT_STEPS = {
   usage_limit:
     "Nothing is wrong with the request. Retry once the ChatGPT plan's limit has reset, or add credits in ChatGPT under Settings > Usage.",
   credits_confirmation_needed: "Ask the user; do not retry with use_credits: true unless they agree.",
+  dir_not_allowed:
+    "Save into one of the allowed folders, or leave output_dir out. Only the user can allow another folder, by adding it to PIXMITH_ALLOWED_DIRS.",
   timeout: "Retry, use a smaller size, or raise PIXMITH_TIMEOUT_MS.",
   generation_failed: "If the request was refused, rephrase the prompt; otherwise retry.",
   no_output: "Retry once. If it keeps failing, call pixmith_status, and run `codex exec \"hello\"` to check that Codex itself works.",

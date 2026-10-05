@@ -401,3 +401,22 @@ test("runCodexCommand + checkStatus: the real commands against the fake Codex", 
     config.codexBin = bin;
   }
 });
+
+test("generateImage: an output_dir outside PIXMITH_ALLOWED_DIRS is refused before anything is created", async () => {
+  process.env.FAKE_MODE = "ok";
+  await reset();
+  await fs.rm(path.join(codexHome, "last-call.json"), { force: true });
+  const allowed = path.join(root, "allowed");
+  config.allowedDirs = [allowed];
+  try {
+    const outside = path.join(root, "not-allowed", "sub");
+    await assert.rejects(generateImage({ prompt: "a fox", outputDir: outside }), (e) => e.kind === "dir_not_allowed");
+    await assert.rejects(fs.access(path.join(root, "not-allowed")), "the folder was not created");
+    await assert.rejects(fs.access(path.join(codexHome, "last-call.json")), "Codex was never launched");
+
+    const res = await generateImage({ prompt: "a fox", outputDir: path.join(allowed, "logos") });
+    assert.equal(path.dirname(res.path), path.join(allowed, "logos"));
+  } finally {
+    config.allowedDirs = null;
+  }
+});

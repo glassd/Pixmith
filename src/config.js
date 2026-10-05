@@ -54,6 +54,23 @@ function envBool(name, fallback) {
   return raw.trim().toLowerCase() === "true";
 }
 
+/**
+ * PIXMITH_ALLOWED_DIRS: folders output_dir may point into, separated like PATH
+ * (":" on macOS/Linux, ";" on Windows). Returns null when unset (any absolute
+ * folder is allowed), else the resolved absolute folders, possibly none.
+ * Relative entries are ignored with a warning: they would depend on the
+ * server's working directory.
+ */
+export function parseAllowedDirs(raw, warnings = configWarnings, delimiter = path.delimiter) {
+  if (raw == null || raw.trim() === "") return null;
+  const dirs = [];
+  for (const entry of raw.split(delimiter).map((e) => e.trim()).filter(Boolean)) {
+    if (path.isAbsolute(entry)) dirs.push(path.resolve(entry));
+    else warnings.push(`PIXMITH_ALLOWED_DIRS entry "${entry}" is not an absolute path and was ignored.`);
+  }
+  return dirs;
+}
+
 const HOME = os.homedir();
 const PROJECT_ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 
@@ -167,6 +184,10 @@ export const config = {
     PROJECT_ROOT,
     envStr("PIXMITH_OUTPUT_DIR", path.join(PROJECT_ROOT, "images")),
   ),
+
+  // Folders output_dir may point into (see parseAllowedDirs); null = any.
+  // defaultOutputDir is always allowed.
+  allowedDirs: parseAllowedDirs(process.env.PIXMITH_ALLOWED_DIRS),
 
   // Stop Codex as soon as the finished PNG is on disk instead of waiting for
   // the agent's closing "DONE" turn (which re-uploads the image to the model).

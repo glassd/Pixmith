@@ -460,6 +460,7 @@ when it differs.
 | `PIXMITH_USE_CREDITS`      | `ask`                                                | When the plan limit is used up: `ask` (require `use_credits: true`), `always` (run on credits without asking), or `never` (refuse). |
 | `PIXMITH_STATE_DIR`        | `<project>/.pixmith`                                 | Where Pixmith keeps its own state: recent job durations (used for time estimates) and the image history behind `list_images`. |
 | `PIXMITH_OUTPUT_DIR`       | `<project>/images`                                   | Default output directory for generated PNGs.                    |
+| `PIXMITH_ALLOWED_DIRS`     | *(unset: any folder)*                                | Folders `output_dir` may point into, separated like `PATH` (`:` on macOS/Linux, `;` on Windows), e.g. `/Users/you/Pictures:/Users/you/projects`. The default output folder is always allowed. See [security notes](#security-notes). |
 | `CODEX_HOME`               | `~/.codex`                                            | Codex home (used to locate the backup `generated_images/` copy). |
 | `PIXMITH_TIMEOUT_MS`       | `300000` (5 min)                                     | Hard timeout per generation.                                    |
 | `PIXMITH_MAX_CONCURRENT`   | `1`                                                  | How many Codex generations may run at once. Extra jobs queue.   |
@@ -543,6 +544,7 @@ plan usage and the output folder, and says what to do about each problem it find
 |--------------------------------------|------------------------------------------------------------------------------|
 | `[binary_missing]`                   | Codex CLI not found in `CODEX_BIN` or any of the usual locations — install it, or set `CODEX_BIN` to the correct path. Apps launched from the Dock don't see your shell's `PATH`, so use an absolute path. |
 | `[not_signed_in]`                    | Sign in to Codex (ChatGPT account) or configure an API key, then retry.     |
+| `[dir_not_allowed]`                  | `output_dir` is outside `PIXMITH_ALLOWED_DIRS`. Save into an allowed folder (or leave `output_dir` out), or add the folder to `PIXMITH_ALLOWED_DIRS` in your MCP client's config. |
 | `[timeout]`                          | Large image or slow service — raise `PIXMITH_TIMEOUT_MS`.                    |
 | `[usage_limit]`                      | Your ChatGPT plan's image/Codex limit was reached. Retry after it resets, or add credits. |
 | `[credits_confirmation_needed]`      | The plan limit is used up and the job would run on paid credits. Tell the assistant whether to continue; see [plan usage and credits](#plan-usage-and-credits). |
@@ -582,6 +584,12 @@ plan usage and the output folder, and says what to do about each problem it find
   modified.
 - `output_dir` must be an absolute path; relative paths are rejected so the MCP
   client's working directory never decides where files land.
+- `output_dir` is chosen by the model, which can be steered by text it reads (a web
+  page, a document). By default any absolute folder is accepted, and on macOS and Linux
+  it is also made writable for Codex's sandbox. Set **`PIXMITH_ALLOWED_DIRS`** to limit
+  it to folders you choose: anything outside them is refused before a job starts, with
+  symlinks resolved so a link inside an allowed folder cannot lead out of it.
+  `pixmith_status` shows the folders in effect.
 
 ## License
 
