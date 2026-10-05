@@ -174,7 +174,7 @@ Tests (no Codex needed — a fake Codex in `fixtures/` stands in for it):
 npm test
 ```
 
-CI runs the same suite on Linux, macOS and Windows for Node 18, 20, 22 and 24.
+CI runs the same suite on Linux for Node 18, 20, 22 and 24, and on macOS and Windows for Node 24.
 
 ---
 
