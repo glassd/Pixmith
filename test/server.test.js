@@ -8,9 +8,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { PixmithError } from "../src/codex.js";
+import { ImageHistory } from "../src/history.js";
 import { JobManager } from "../src/jobs.js";
 import { createServer } from "../src/server.js";
-import { CANCEL_OUTPUT_SCHEMA, JOB_OUTPUT_SCHEMA } from "../src/tools.js";
+import { CANCEL_OUTPUT_SCHEMA, JOB_OUTPUT_SCHEMA, LIST_OUTPUT_SCHEMA } from "../src/tools.js";
 import { noisyPng } from "../fixtures/noisy-png.js";
 
 // End-to-end through a real MCP client. The SDK client checks every result's
@@ -25,12 +26,14 @@ const USAGE = {
   reachedType: null,
 };
 
-async function connect({ structuredOutput, pollWaitMs = 60, usage = USAGE, maxInlineBytes = 1024 * 1024 } = {}) {
+async function connect({ structuredOutput, pollWaitMs = 60, usage = USAGE, maxInlineBytes = 1024 * 1024, historyFile = null } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pixmith-server-"));
   const png = path.join(dir, "out.png");
   await fs.writeFile(png, noisyPng(64, 48));
   const calls = [];
+  const history = historyFile ? new ImageHistory({ file: historyFile }) : null;
   const jobs = new JobManager({
+    history,
     generate: (args) =>
       new Promise((resolve, reject) => {
         calls.push({ args, resolve, reject });
@@ -47,7 +50,7 @@ async function connect({ structuredOutput, pollWaitMs = 60, usage = USAGE, maxIn
     usageWarnPercent: 80,
     structuredOutput,
   };
-  const server = createServer({ jobs, config, readUsage: async () => usage });
+  const server = createServer({ jobs, config, readUsage: async () => usage, history });
   const client = new Client({ name: "test-client", version: "1.0.0" });
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
@@ -71,7 +74,7 @@ async function connect({ structuredOutput, pollWaitMs = 60, usage = USAGE, maxIn
     await client.close();
     await fs.rm(dir, { recursive: true, force: true });
   };
-  return { dir, png, tools, calls, result, callTool, close };
+  return { dir, png, tools, calls, result, callTool, close, history };
 }
 
 /** Every field the result carries must be declared in the schema (the client only checks declared ones). */
@@ -102,6 +105,7 @@ test("structured output: every tool declares an output schema", async () => {
       assert.deepEqual(byName[name].outputSchema, JOB_OUTPUT_SCHEMA, name);
     }
     assert.deepEqual(byName.cancel_image.outputSchema, CANCEL_OUTPUT_SCHEMA);
+    assert.deepEqual(byName.list_images.outputSchema, LIST_OUTPUT_SCHEMA);
   } finally {
     await t.close();
   }
@@ -251,5 +255,104 @@ test("structured output: PIXMITH_STRUCTURED_OUTPUT=false leaves the tools as the
     assert.match(res.content[0].text, /status: done/);
   } finally {
     await t.close();
+  }
+});
+
+/** Run one job to completion through generate_image (or edit_image) and return its structured result. */
+async function finish(t, tool, args, result) {
+  const started = (await t.callTool(tool, { ...args, wait: false })).structuredContent;
+  t.calls.at(-1).resolve(result);
+  const done = (await t.callTool("get_image_result", { job_id: started.job_id })).structuredContent;
+  await t.history.writing;
+  return done;
+}
+
+test("list_images: earlier images, newest first, filtered by prompt and mode", async () => {
+  const state = await fs.mkdtemp(path.join(os.tmpdir(), "pixmith-state-"));
+  const t = await connect({ historyFile: path.join(state, "history.jsonl") });
+  try {
+    const fox = await finish(t, "generate_image", { prompt: "a red fox" }, t.result());
+    const whale = await finish(t, "generate_image", { prompt: "a blue whale" }, t.result());
+    const night = await finish(t, "edit_image", { image: t.png, prompt: "make the FOX night" }, t.result({ inputImages: [t.png] }));
+
+    const res = await t.callTool("list_images");
+    const data = res.structuredContent;
+    assertDeclared(data, LIST_OUTPUT_SCHEMA);
+    data.images.forEach((img) => assertDeclared(img, LIST_OUTPUT_SCHEMA.properties.images.items));
+    assert.equal(data.status, "ok");
+    assert.equal(data.total, 3);
+    assert.deepEqual(data.images.map((i) => i.job_id), [night.job_id, whale.job_id, fox.job_id]);
+    assert.deepEqual(
+      { ...data.images[0], created_at: undefined },
+      {
+        path: t.png,
+        job_id: night.job_id,
+        created_at: undefined,
+        mode: "edit",
+        prompt: "make the FOX night",
+        size: "64x48",
+        width: 64,
+        height: 48,
+        source_image: t.png,
+        metadata_path: "/abs/images/out.json",
+      },
+    );
+    const text = res.content[0].text;
+    assert.match(text, /^3 images:/);
+    assert.match(text, /^1\. \d{4}-\d\d-\d\d \d\d:\d\d UTC · edited · 64x48$/m);
+    assert.match(text, new RegExp(`^   job_id: ${fox.job_id}$`, "m"));
+
+    const foxes = (await t.callTool("list_images", { query: "fox", limit: 1 })).structuredContent;
+    assert.deepEqual([foxes.total, foxes.images.map((i) => i.job_id)], [2, [night.job_id]]);
+    assert.match((await t.callTool("list_images", { query: "fox", limit: 1 })).content[0].text, /^2 images \(matching "fox"\), showing the newest 1:/);
+    const generated = (await t.callTool("list_images", { mode: "generate" })).structuredContent;
+    assert.deepEqual(generated.images.map((i) => i.job_id), [whale.job_id, fox.job_id]);
+
+    const none = await t.callTool("list_images", { query: "zebra" });
+    assert.deepEqual(none.structuredContent, { status: "ok", images: [], total: 0 });
+    assert.equal(none.content[0].text, 'No images found (matching "zebra").');
+
+    const bad = await t.callTool("list_images", { limit: 0 });
+    assert.equal(bad.isError, true);
+    assert.equal(bad.structuredContent.error.kind, "bad_request");
+  } finally {
+    await t.close();
+    await fs.rm(state, { recursive: true, force: true });
+  }
+});
+
+test("get_image_result: a finished image can still be collected after a restart", async () => {
+  const state = await fs.mkdtemp(path.join(os.tmpdir(), "pixmith-state-"));
+  const historyFile = path.join(state, "history.jsonl");
+  const png = path.join(state, "kept.png");
+  await fs.writeFile(png, noisyPng(64, 48));
+  const before = await connect({ historyFile });
+  let jobId;
+  try {
+    jobId = (await finish(before, "generate_image", { prompt: "a fox" }, before.result({ path: png }))).job_id;
+  } finally {
+    await before.close();
+  }
+
+  const after = await connect({ historyFile }); // a fresh server: no jobs in memory
+  try {
+    const res = await after.callTool("get_image_result", { job_id: jobId });
+    const data = res.structuredContent;
+    assert.equal(data.status, "done");
+    assert.equal(data.job_id, jobId);
+    assert.equal(data.path, png);
+    assert.equal(data.usage, null, "usage from today would not describe that job");
+    assert.equal(res.content.at(-1).type, "image");
+    assert.doesNotMatch(res.content[0].text, /Plan usage/);
+
+    const cancel = (await after.callTool("cancel_image", { job_id: jobId })).structuredContent;
+    assert.deepEqual(cancel, { status: "done", job_id: jobId, cancel_requested: false });
+
+    const unknown = await after.callTool("get_image_result", { job_id: "never-existed" });
+    assert.equal(unknown.structuredContent.error.kind, "unknown_job");
+    assert.match(unknown.content[0].text, /list_images/);
+  } finally {
+    await after.close();
+    await fs.rm(state, { recursive: true, force: true });
   }
 });

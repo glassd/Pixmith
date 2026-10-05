@@ -227,9 +227,10 @@ for the assistant.
 Waits up to the wait window, then returns. While the job is waiting for a slot or still
 rendering it returns `status: queued` or `status: running` with the current stage,
 elapsed time and an estimate of what is left; the assistant simply calls it again until
-`status: done`. Results stay available for 15 minutes and can be fetched more than once,
-so an image is never lost to a client-side timeout — call `get_image_result` with no
-arguments to recover it.
+`status: done`. Results can be fetched more than once, so an image is never lost to a
+client-side timeout — call `get_image_result` with no arguments to recover it. A finished
+image's `job_id` keeps working afterwards, even after Pixmith restarts (it is looked up in
+the [image history](#list_images--find-earlier-images)).
 
 ### `cancel_image` — stop a job
 
@@ -240,6 +241,24 @@ arguments to recover it.
 A queued job is dropped; a running job's Codex session is killed at once, so it stops
 using your ChatGPT quota. Pixmith also stops every running session when the MCP client
 disconnects.
+
+### `list_images` — find earlier images
+
+| Param   | Type    | Required | Description                                                          |
+|---------|---------|----------|----------------------------------------------------------------------|
+| `limit` | integer | ❌       | How many to return, 1–50. Default 10.                                |
+| `query` | string  | ❌       | Only images whose prompt contains this text (case-insensitive).      |
+| `mode`  | string  | ❌       | `generate` or `edit`: only generated, or only edited, images.        |
+
+Lists finished images newest first, each with its time, mode, size, prompt, path, the
+image an edit was made from, and its `job_id`, so you can say "edit the fox picture from
+earlier" and the assistant can find it. It covers every output folder, and leaves out
+images that have been deleted since.
+
+The list comes from Pixmith's image history, `history.jsonl` in its state folder
+(`PIXMITH_STATE_DIR`, default `.pixmith/`), which gets one line per finished image and
+keeps the newest 1,000. It holds your prompts; delete the file to clear the history.
+Servers sharing a state folder (e.g. Claude Desktop and Claude Code) share the history.
 
 ### Structured results
 
@@ -385,7 +404,7 @@ when it differs.
 | `PIXMITH_SHOW_USAGE`       | `true`                                               | Add the plan usage line (and near-limit warning) to results.    |
 | `PIXMITH_USAGE_WARN_PERCENT` | `80`                                               | Warn once any plan window is this full.                          |
 | `PIXMITH_USE_CREDITS`      | `ask`                                                | When the plan limit is used up: `ask` (require `use_credits: true`), `always` (run on credits without asking), or `never` (refuse). |
-| `PIXMITH_STATE_DIR`        | `<project>/.pixmith`                                 | Where Pixmith keeps its recent job durations (used for time estimates). |
+| `PIXMITH_STATE_DIR`        | `<project>/.pixmith`                                 | Where Pixmith keeps its own state: recent job durations (used for time estimates) and the image history behind `list_images`. |
 | `PIXMITH_OUTPUT_DIR`       | `<project>/images`                                   | Default output directory for generated PNGs.                    |
 | `CODEX_HOME`               | `~/.codex`                                            | Codex home (used to locate the backup `generated_images/` copy). |
 | `PIXMITH_TIMEOUT_MS`       | `300000` (5 min)                                     | Hard timeout per generation.                                    |

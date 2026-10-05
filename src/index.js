@@ -5,19 +5,22 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 
 import { config, configWarnings } from "./config.js";
 import { generateImage, killAllCodex } from "./codex.js";
+import { ImageHistory } from "./history.js";
 import { DurationStats, JobManager } from "./jobs.js";
 import { createServer } from "./server.js";
 
 // Wiring only: the MCP server is in server.js, the tools in tools.js, the queue
 // in jobs.js, and the Codex driver in codex.js.
 
+const history = new ImageHistory({ file: path.join(config.stateDir, "history.jsonl") });
 const jobs = new JobManager({
   generate: generateImage,
   maxConcurrent: config.maxConcurrent,
   stats: new DurationStats({ file: path.join(config.stateDir, "stats.json") }),
+  history,
   log: (job, line) => process.stderr.write(`[codex ${job.id.slice(0, 8)}] ${line}\n`),
 });
-const server = createServer({ jobs, config });
+const server = createServer({ jobs, config, history });
 
 // When the client goes away, stop any Codex sessions still running so they do
 // not keep spending the ChatGPT plan's quota on images nobody will collect.
