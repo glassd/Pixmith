@@ -47,6 +47,14 @@ process.stdin.on("end", () => {
     return;
   }
 
+  if (mode === "anon") {
+    // Neither JSON events nor a banner: Pixmith gets no session id to go on.
+    writePng();
+    fs.writeFileSync(lastMsg, "DONE");
+    process.stdout.write("DONE\n");
+    return;
+  }
+
   emit({ type: "thread.started", thread_id: SESSION });
   emit({ type: "turn.started" });
   if (mode === "early") {
@@ -64,6 +72,14 @@ process.stdin.on("end", () => {
     process.exit(1);
   }
   emit({ type: "item.completed", item: { id: "item_0", type: "agent_message", text: "Generating one image." } });
+  if (mode === "refuse-split") {
+    // The refusal arrives with a multi-byte character cut across two stdout chunks.
+    const line = Buffer.from(`${JSON.stringify({ type: "item.completed", item: { id: "item_1", type: "agent_message", text: "ERROR: refusé — 内容" } })}\n`);
+    const cut = line.indexOf(Buffer.from("é")) + 1;
+    process.stdout.write(line.subarray(0, cut));
+    setTimeout(() => process.stdout.write(line.subarray(cut)), 100);
+    return;
+  }
   if (mode === "refuse") {
     emit({ type: "item.completed", item: { id: "item_1", type: "agent_message", text: "ERROR: content policy" } });
     fs.writeFileSync(lastMsg, "ERROR: content policy");

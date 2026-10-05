@@ -77,7 +77,7 @@ MCP client ──MCP(stdio)──▶ Pixmith ──spawn──▶ codex exec "$i
 6. The same tool call returns the absolute path plus the image inline. MCP clients cap
    the size of a tool result (Claude Desktop rejects anything over 1 MB) and these PNGs
    are 2–3 MB, so the inline copy is a JPEG preview sized to fit, normally still at full
-   resolution. The full-quality PNG is always the file at the returned path. If the job
+   resolution up to a 2048px long edge. The full-quality PNG is always the file at the returned path. If the job
    outlasts the wait window (~45s), the call returns a `job_id` instead and the client
    collects the image with `get_image_result`.
 
@@ -168,11 +168,13 @@ node scripts/smoke-test.js "make the helmet gold" auto /abs/path/to/cat.png   # 
 A successful run prints JSON with the saved `path`. Images land in `./images/` by
 default.
 
-Unit tests (no Codex needed):
+Tests (no Codex needed — a fake Codex in `fixtures/` stands in for it):
 
 ```bash
 npm test
 ```
+
+CI runs the same suite on Linux for Node 18, 20, 22 and 24, and on macOS and Windows for Node 24.
 
 ---
 
@@ -305,7 +307,7 @@ when it differs.
 | Variable                   | Default                                              | Purpose                                                          |
 |----------------------------|------------------------------------------------------|------------------------------------------------------------------|
 | `CODEX_BIN`                | auto-detected, else `codex` on `PATH`                | Path to the Codex binary. Set this if auto-detection misses (e.g. `CODEX_BIN=C:/Users/you/AppData/Local/Programs/codex/codex.exe`). |
-| `PIXMITH_SANDBOX`          | `workspace-write`                                    | Sandbox policy passed to `codex exec` when the OS sandbox is used. |
+| `PIXMITH_SANDBOX`          | `workspace-write`                                    | Sandbox policy passed to `codex exec` when the OS sandbox is used: `read-only`, `workspace-write` or `danger-full-access`. Anything else is ignored with a startup warning. |
 | `PIXMITH_BYPASS_SANDBOX`   | `true` on Windows, else `false`                      | Run Codex without its OS sandbox. Codex sandboxing is macOS/Linux only (Seatbelt/Landlock); on Windows it blocks the file-save, so Pixmith bypasses it there. Set `true`/`false` to override. |
 | `PIXMITH_POLL_WAIT_MS`     | `45000` (45s)                                        | The wait window: the longest any single tool call waits for a job (2s–55s). Lower it if your MCP client's request timeout is under ~60s. |
 | `PIXMITH_EARLY_EXIT`       | `true`                                               | Stop Codex as soon as the finished PNG is on disk instead of waiting for the agent's closing turn (saves ~4–7s and the tokens of re-uploading the image). |
@@ -321,7 +323,7 @@ when it differs.
 | `PIXMITH_TIMEOUT_MS`       | `300000` (5 min)                                     | Hard timeout per generation.                                    |
 | `PIXMITH_MAX_CONCURRENT`   | `1`                                                  | How many Codex generations may run at once. Extra jobs queue.   |
 | `PIXMITH_RETURN_IMAGE`     | `true`                                               | Set `false` to return only the path, never inline bytes.        |
-| `PIXMITH_MAX_INLINE_BYTES` | `696320` (680 KB)                                    | Byte budget for the inline image. A PNG over it is sent as a JPEG preview that fits (quality 85, downscaled only if needed). The default keeps the whole result under Claude Desktop's 1 MB tool-result cap, since base64 adds a third. Raise it only for clients without that cap. |
+| `PIXMITH_MAX_INLINE_BYTES` | `696320` (680 KB)                                    | Byte budget for the inline image. A PNG over it is sent as a JPEG preview that fits (quality 85, long edge at most 2048px, downscaled further only if needed). The default keeps the whole result under Claude Desktop's 1 MB tool-result cap, since base64 adds a third. Raise it only for clients without that cap. |
 
 See [`.env.example`](.env.example) for a copy-paste starting point.
 
@@ -423,6 +425,11 @@ Or add the same `mcpServers` block above to a project-level `.mcp.json`.
   output directory. **On Windows there is no OS sandbox** (Codex's Seatbelt/Landlock
   sandboxing is Unix-only), so Pixmith runs Codex unsandboxed there by default. The
   agent is instructed not to run shell commands, but that is a prompt, not a policy.
+  Treat image prompts there as able to reach a shell, and only pass prompts you trust.
+- On Windows, an npm-installed `codex.cmd` has to be run through `cmd.exe`. Pixmith
+  refuses to pass it any path containing `% ! ^ & | < >` (characters `cmd.exe` would
+  interpret), so a crafted `output_dir` or image path cannot run commands. Point
+  `CODEX_BIN` at a `codex.exe` to avoid the shell, and the restriction, entirely.
 - Input images for `edit_image` / `reference_images` must be absolute paths to real image
   files (checked by magic bytes, max 20 MB). They are attached to the Codex prompt, so
   they are uploaded to OpenAI as part of the request; the files themselves are never

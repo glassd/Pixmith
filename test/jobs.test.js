@@ -38,9 +38,10 @@ test("DurationStats: default, median, rolling window, persistence", async () => 
     stats.record("generate", Number.NaN); // ignored
     assert.equal(stats.estimate("generate"), 32_000);
 
-    // The write is fire-and-forget; give it a moment, then reload.
-    await new Promise((r) => setTimeout(r, 50));
+    // Saves are queued and land in order, through a temporary file each.
+    await stats.saved;
     assert.equal(new DurationStats({ file, keep: 3 }).estimate("generate"), 32_000);
+    assert.deepEqual(await fs.readdir(path.dirname(file)), ["stats.json"], "no temporary files are left behind");
     // A corrupt or missing file falls back to defaults.
     await fs.writeFile(file, "not json");
     assert.equal(new DurationStats({ file }).estimate("generate"), 40_000);

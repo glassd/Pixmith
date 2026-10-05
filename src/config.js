@@ -153,7 +153,7 @@ export const config = {
   codexCandidates: codexCandidates(),
 
   // Sandbox policy passed to `codex exec` (when the OS sandbox is in use).
-  sandbox: envStr("PIXMITH_SANDBOX", "workspace-write"),
+  sandbox: envChoice("PIXMITH_SANDBOX", ["read-only", "workspace-write", "danger-full-access"], "workspace-write"),
 
   // Bypass Codex's OS sandbox entirely. Codex sandboxing is implemented with
   // macOS Seatbelt / Linux Landlock and has no Windows equivalent, so on Windows

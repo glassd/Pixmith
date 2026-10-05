@@ -162,33 +162,103 @@ async function listFiles(root, ext) {
     } catch {
       continue;
     }
+    const files = [];
     for (const ent of entries) {
       const full = path.join(dir, ent.name);
-      if (ent.isDirectory()) {
-        stack.push(full);
-      } else if (ent.isFile() && ent.name.toLowerCase().endsWith(ext)) {
+      if (ent.isDirectory()) stack.push(full);
+      else if (ent.isFile() && ent.name.toLowerCase().endsWith(ext)) files.push(full);
+    }
+    await Promise.all(
+      files.map(async (full) => {
         try {
           out.set(full, (await fs.stat(full)).mtimeMs);
         } catch {
           /* ignore */
         }
-      }
-    }
+      }),
+    );
   }
   return out;
 }
 
+const generatedImagesRoot = () => path.join(config.codexHome, "generated_images");
+
 /** Every *.png under CODEX_HOME/generated_images (optionally just one session's dir). */
 export function listGeneratedPngs(sessionId = null) {
-  const root = sessionId
-    ? path.join(config.codexHome, "generated_images", sessionId)
-    : path.join(config.codexHome, "generated_images");
-  return listFiles(root, ".png");
+  return listFiles(sessionId ? path.join(generatedImagesRoot(), sessionId) : generatedImagesRoot(), ".png");
 }
 
-/** Every rollout *.jsonl under CODEX_HOME/sessions. */
-export function listRolloutLogs() {
-  return listFiles(path.join(config.codexHome, "sessions"), ".jsonl");
+/**
+ * The names directly under CODEX_HOME/generated_images. A cheap pre-run
+ * snapshot: Codex gives every session a folder of its own there, so a run's
+ * output is whatever appears under a name that was not present before.
+ */
+export async function generatedImageEntries() {
+  try {
+    return new Set(await fs.readdir(generatedImagesRoot()));
+  } catch {
+    return new Set();
+  }
+}
+
+/** PNGs under generated_images entries that are not in the `before` snapshot. */
+export async function listNewGeneratedPngs(before) {
+  const fresh = [...(await generatedImageEntries())].filter((name) => !before.has(name));
+  const found = new Map();
+  for (const name of fresh) {
+    const full = path.join(generatedImagesRoot(), name);
+    if (name.toLowerCase().endsWith(".png")) {
+      try {
+        found.set(full, (await fs.stat(full)).mtimeMs);
+      } catch {
+        /* ignore */
+      }
+    } else {
+      for (const [p, mtime] of await listFiles(full, ".png")) found.set(p, mtime);
+    }
+  }
+  return found;
+}
+
+/** The `limit` newest YYYY/MM/DD folders under `root`, newest first. */
+async function newestDateDirs(root, limit) {
+  const out = [];
+  const visit = async (dir, depth) => {
+    if (depth === 3) {
+      out.push(dir);
+      return;
+    }
+    let names;
+    try {
+      names = (await fs.readdir(dir, { withFileTypes: true }))
+        .filter((e) => e.isDirectory() && /^\d+$/.test(e.name))
+        .map((e) => e.name);
+    } catch {
+      return;
+    }
+    names.sort((a, b) => Number(b) - Number(a));
+    for (const name of names) {
+      if (out.length >= limit) return;
+      await visit(path.join(dir, name), depth + 1);
+    }
+  };
+  await visit(root, 0);
+  return out;
+}
+
+/**
+ * Rollout *.jsonl logs under CODEX_HOME/sessions. Codex files them by date
+ * (sessions/YYYY/MM/DD/) and keeps every session it has ever run, so only the
+ * `days` newest day folders are listed: they hold the log of a job that just
+ * ran and the latest usage snapshot. A layout without date folders, or
+ * `days: Infinity`, lists everything.
+ */
+export async function listRolloutLogs({ days = 3 } = {}) {
+  const root = path.join(config.codexHome, "sessions");
+  const dayDirs = Number.isFinite(days) ? await newestDateDirs(root, days) : [];
+  if (!dayDirs.length) return listFiles(root, ".jsonl");
+  const lists = await Promise.all(dayDirs.map((dir) => listFiles(dir, ".jsonl")));
+  return new Map(lists.flatMap((list) => [...list]));
 }
 
 // PNG files always start with this 8-byte signature.
@@ -304,8 +374,9 @@ export function extractBase64Png(text) {
  * writes the conversation — including the image_gen result's base64 image — to a
  * rollout *.jsonl under CODEX_HOME/sessions whose filename carries the session
  * id. On platforms where image_gen doesn't write a PNG file (e.g. Windows) this
- * log is where the image lives. We prefer the log named after our session id
- * and fall back to any log that is new or changed since the pre-run snapshot.
+ * log is where the image lives. With a session id, only the log named after it
+ * is read, so another job's image can never be picked up; without one, any log
+ * that is new or changed since the pre-run snapshot is tried, newest first.
  * Returns a PNG Buffer or null.
  */
 export async function recoverFromRolloutLogs(rolloutsBefore, sessionId = null) {
@@ -576,8 +647,7 @@ export async function generateImage({ prompt, size, outputDir, images, mode = "g
   // Snapshot generated images and rollout logs BEFORE the run. These are only
   // the fallback when Codex's session id can't be parsed from its output; the
   // primary lookup is generated_images/<session id>/, which is exact.
-  const beforeSnapshot = await listGeneratedPngs();
-  const rolloutsBefore = await listRolloutLogs();
+  const [imagesBefore, rolloutsBefore] = await Promise.all([generatedImageEntries(), listRolloutLogs()]);
 
   // Sandbox vs. bypass. Codex's OS sandbox (Seatbelt/Landlock) is macOS/Linux
   // only; on Windows it has no equivalent and blocks the file-save, so we run
@@ -672,16 +742,11 @@ export async function generateImage({ prompt, size, outputDir, images, mode = "g
 
   // 5. Locate the PNG THIS run produced. Preferred: the session-scoped
   // directory generated_images/<session id>/, which cannot contain another
-  // job's output. Fallback (no session id parsed): newest PNG that was not
-  // present in the pre-run snapshot.
-  let candidates = [];
-  if (sessionId) {
-    for (const [p, mtime] of await listGeneratedPngs(sessionId)) candidates.push({ path: p, mtime });
-  } else {
-    for (const [p, mtime] of await listGeneratedPngs()) {
-      if (!beforeSnapshot.has(p)) candidates.push({ path: p, mtime });
-    }
-  }
+  // job's output. Fallback (no session id parsed): newest PNG under a
+  // generated_images entry that was not there before the run.
+  const candidates = [];
+  const found = sessionId ? await listGeneratedPngs(sessionId) : await listNewGeneratedPngs(imagesBefore);
+  for (const [p, mtime] of found) candidates.push({ path: p, mtime });
   candidates.sort((a, b) => b.mtime - a.mtime);
 
   let sourcePng = null;
@@ -800,6 +865,32 @@ function winQuote(s) {
   return /[\s"]/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s;
 }
 
+// cmd.exe expands %VAR% (and !VAR! under delayed expansion) even inside double
+// quotes, and treats & | < > ^ as operators outside them; a `.cmd` shim then
+// re-parses its arguments a second time. There is no escaping that survives
+// both passes reliably, so an argument carrying one of these is refused.
+const CMD_UNSAFE = /[%!^&|<>\r\n]/;
+
+/**
+ * Build the command line for running a `.cmd`/`.bat` Codex shim through
+ * cmd.exe. Paths such as `output_dir` come from the MCP client, so a value like
+ * `C:\out&calc` must never reach the shell: it is rejected with a bad_request.
+ */
+export function cmdShellCommand(bin, args) {
+  for (const arg of [bin, ...args]) {
+    const bad = String(arg).match(CMD_UNSAFE);
+    if (bad) {
+      const ch = JSON.stringify(bad[0]);
+      throw new PixmithError(
+        "bad_request",
+        `Cannot pass "${arg}" to Codex: it contains ${ch}, which cmd.exe would interpret when running the Codex shim ` +
+          `"${bin}". Use a path without % ! ^ & | < >, or set CODEX_BIN to a codex.exe so that no shell is involved.`,
+      );
+    }
+  }
+  return { command: winQuote(bin), args: args.map(winQuote) };
+}
+
 /**
  * Kill the Codex process and everything it spawned. On Windows a `.cmd` shim
  * runs under cmd.exe, so killing `child` alone would orphan the real codex
@@ -858,13 +949,19 @@ function runCodex(args, promptStdin, { onProgress, onEvent, signal, until } = {}
     const isWindows = process.platform === "win32";
     const needsShell = isWindows && !/\.exe$/i.test(config.codexBin);
 
+    // A cancel can land while generateImage is still preparing the run, before
+    // the abort listener below exists; it would never fire, so check here.
+    if (signal?.aborted) {
+      resolve({ stdout: "", stderr: "", code: null, timedOut: false, aborted: true, stoppedEarly: false, sessionId: null, agentText: "", eventErrors: [] });
+      return;
+    }
+
     let command = config.codexBin;
     let spawnArgs = args;
     const opts = { stdio: ["pipe", "pipe", "pipe"], env: process.env, windowsHide: true };
     if (needsShell) {
       opts.shell = true;
-      command = winQuote(config.codexBin);
-      spawnArgs = args.map(winQuote);
+      ({ command, args: spawnArgs } = cmdShellCommand(config.codexBin, args));
     }
 
     let child;
@@ -940,8 +1037,11 @@ function runCodex(args, promptStdin, { onProgress, onEvent, signal, until } = {}
       child.stdin.end();
     }
 
-    child.stdout.on("data", (d) => {
-      const text = d.toString();
+    // Decode as a stream, so a multi-byte character split across two chunks
+    // is not garbled.
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (text) => {
       stdout += text;
       lineBuf += text;
       let nl;
@@ -950,8 +1050,7 @@ function runCodex(args, promptStdin, { onProgress, onEvent, signal, until } = {}
         lineBuf = lineBuf.slice(nl + 1);
       }
     });
-    child.stderr.on("data", (d) => {
-      const text = d.toString();
+    child.stderr.on("data", (text) => {
       stderr += text;
       if (onProgress) {
         for (const line of text.split(/\r?\n/)) {
