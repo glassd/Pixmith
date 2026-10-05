@@ -18,12 +18,14 @@ await fs.mkdir(codexHome, { recursive: true });
 process.env.CODEX_BIN = fileURLToPath(new URL(`../fixtures/fake-codex.${isWindows ? "cmd" : "cjs"}`, import.meta.url));
 process.env.CODEX_HOME = codexHome;
 process.env.PIXMITH_OUTPUT_DIR = outDir;
+process.env.PIXMITH_STATE_DIR = path.join(root, "state");
 process.env.PIXMITH_BYPASS_SANDBOX = "false";
 process.env.PIXMITH_FAST_PROMPT = "true";
 process.env.PIXMITH_CODEX_MODEL = "gpt-test-mini";
 process.env.PIXMITH_CODEX_EFFORT = "low";
 
-const { generateImage, listRolloutLogs, writeMetadata } = await import("../src/codex.js");
+const { generateImage, listRolloutLogs, runCodexCommand, writeMetadata } = await import("../src/codex.js");
+const { checkStatus } = await import("../src/status.js");
 const { config } = await import("../src/config.js");
 const { readUsage } = await import("../src/usage.js");
 const lastCall = async () => JSON.parse(await fs.readFile(path.join(codexHome, "last-call.json"), "utf8"));
@@ -371,4 +373,31 @@ test("generateImage: a chosen filename is used, and never overwrites", async () 
   assert.notDeepEqual(await fs.readFile(first.path), Buffer.alloc(0), "the first file is untouched");
 
   await assert.rejects(generateImage({ prompt: "a logo", outputDir: dir, filename: "../escape" }), (e) => e.kind === "bad_request");
+});
+
+test("runCodexCommand + checkStatus: the real commands against the fake Codex", async () => {
+  const version = await runCodexCommand(["--version"]);
+  assert.equal(version.code, 0);
+  assert.match(version.stdout, /codex-cli 0\.99\.0-fake/);
+
+  for (const [login, state] of [["chatgpt", "chatgpt"], ["apikey", "api_key"], ["out", "signed_out"], ["unsupported", "unknown"]]) {
+    process.env.FAKE_LOGIN = login;
+    try {
+      const r = await checkStatus({ config });
+      assert.equal(r.codex.version, "0.99.0-fake", login);
+      assert.equal(r.sign_in.state, state, login);
+    } finally {
+      delete process.env.FAKE_LOGIN;
+    }
+  }
+
+  const bin = config.codexBin;
+  config.codexBin = path.join(root, "no-such-codex");
+  try {
+    const r = await checkStatus({ config });
+    assert.equal(r.codex.found, false);
+    assert.equal(r.problems[0].kind, "binary_missing");
+  } finally {
+    config.codexBin = bin;
+  }
 });

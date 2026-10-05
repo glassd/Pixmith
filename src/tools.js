@@ -5,6 +5,7 @@ import { normalizeSize } from "./config.js";
 import { BACKGROUNDS, PixmithError, STAGE_LABELS, cleanFilename, validateInputImages, MAX_INPUT_IMAGES } from "./codex.js";
 import { jobFromEntry } from "./history.js";
 import { makeInlineImage } from "./preview.js";
+import { checkStatus as checkSetup } from "./status.js";
 import { creditGate, readUsage as readCodexUsage, usageLines, usageSummary } from "./usage.js";
 
 // Pixmith's MCP tool layer. A generation outlives the per-request timeout some
@@ -19,6 +20,8 @@ import { creditGate, readUsage as readCodexUsage, usageLines, usageSummary } fro
 //   get_image_result             picks up a job that needed longer (job_id
 //                                optional — defaults to the latest job).
 //   cancel_image                 stops a queued or running job.
+//   pixmith_status               checks Codex, sign-in, plan usage and folders
+//                                without making an image.
 //   list_images                  lists earlier images from the history, newest
 //                                first (a finished job_id also stays collectable
 //                                through it after a restart).
@@ -161,6 +164,51 @@ export const LIST_OUTPUT_SCHEMA = {
   required: ["status"],
 };
 
+/** Output of pixmith_status. */
+export const STATUS_OUTPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    status: { type: "string", enum: ["ready", "problems", "error"], description: '"ready" when nothing stands in the way of a job.' },
+    pixmith_version: { type: "string" },
+    node_version: { type: "string" },
+    platform: { type: "string" },
+    codex: {
+      type: "object",
+      properties: {
+        bin: { type: "string" },
+        found: { type: "boolean" },
+        version: { type: ["string", "null"] },
+      },
+      required: ["bin", "found", "version"],
+    },
+    sign_in: {
+      type: "object",
+      properties: {
+        state: { type: "string", enum: ["chatgpt", "api_key", "signed_in", "signed_out", "unknown"] },
+        detail: { type: "string" },
+      },
+      required: ["state"],
+    },
+    usage: USAGE_SCHEMA,
+    limit_reached: { type: "boolean", description: "A new job would need consent to run on paid credits." },
+    output_dir: { type: "object", properties: { path: { type: "string" }, writable: { type: "boolean" } }, required: ["path", "writable"] },
+    state_dir: { type: "object", properties: { path: { type: "string" }, writable: { type: "boolean" } }, required: ["path", "writable"] },
+    jobs: { type: "object", properties: { running: { type: "integer" }, queued: { type: "integer" } }, required: ["running", "queued"] },
+    settings: { type: "object", description: "The settings in effect (from PIXMITH_* environment variables)." },
+    problems: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { kind: { type: "string" }, message: { type: "string" }, next_step: { type: "string" } },
+        required: ["kind", "message", "next_step"],
+      },
+    },
+    warnings: { type: "array", items: { type: "string" } },
+    error: ERROR_SCHEMA,
+  },
+  required: ["status"],
+};
+
 /** Output of cancel_image. */
 export const CANCEL_OUTPUT_SCHEMA = {
   type: "object",
@@ -183,7 +231,15 @@ const FINAL_STAGES = new Set(["finishing", "saving"]);
 
 const secs = (ms) => Math.max(0, Math.round(ms / 1000));
 
-export function createTools({ jobs, config, readUsage = readCodexUsage, history = null }) {
+export function createTools({
+  jobs,
+  config,
+  readUsage = readCodexUsage,
+  history = null,
+  configWarnings = [],
+  checkStatus = checkSetup,
+  runCodexCommand,
+}) {
   // Usage reporting is best-effort: a failure to read Codex's logs must never
   // fail a job or hide its result.
   const safeUsage = async (opts) => {
@@ -370,6 +426,17 @@ export function createTools({ jobs, config, readUsage = readCodexUsage, history 
       additionalProperties: false,
     },
     ...outputSchema(LIST_OUTPUT_SCHEMA),
+  };
+
+  const STATUS_TOOL = {
+    name: "pixmith_status",
+    description:
+      "Check whether Pixmith can make images, without making one (uses no plan quota): whether Codex is installed and its " +
+      "version, whether it is signed in with the ChatGPT account, how much of the plan's usage is left, whether the output " +
+      "folder is writable, and jobs in progress. Use it when the user asks about setup or usage, or after a binary_missing " +
+      "or not_signed_in error. Each problem found comes with what to do about it.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    ...outputSchema(STATUS_OUTPUT_SCHEMA),
   };
 
   // ---- shared argument validation -------------------------------------------------
@@ -883,6 +950,55 @@ export function createTools({ jobs, config, readUsage = readCodexUsage, history 
     return withData(text(lines), { status: "ok", images: listed, total });
   }
 
+  async function status() {
+    const usage = await safeUsage();
+    const r = await checkStatus({
+      config,
+      configWarnings,
+      jobs,
+      readUsage: async () => usage,
+      ...(runCodexCommand ? { runCommand: runCodexCommand } : {}),
+    });
+    const signIn = {
+      chatgpt: "yes, with a ChatGPT account",
+      api_key: "yes, with an API key (billed to the API account, not the ChatGPT plan)",
+      signed_in: "yes",
+      signed_out: "no",
+      unknown: "unknown",
+    }[r.sign_in.state];
+    const lines = [
+      r.status === "ready"
+        ? `Pixmith ${r.pixmith_version}: ready to make images.`
+        : `Pixmith ${r.pixmith_version}: ${r.problems.length} problem${r.problems.length === 1 ? "" : "s"} found.`,
+    ];
+    if (r.problems.length) {
+      lines.push("", "Problems:");
+      for (const p of r.problems) lines.push(`- ${p.message} Next step: ${p.next_step}`);
+    }
+    lines.push(
+      "",
+      `Codex: ${r.codex.found ? `${r.codex.version ? `version ${r.codex.version}` : "version unknown"} at ${r.codex.bin}` : `not found (${r.codex.bin})`}`,
+      `Signed in: ${signIn}${r.sign_in.detail ? `. ${r.sign_in.detail}` : ""}`,
+    );
+    const usageText = usageLines(usage, { warnPercent: config.usageWarnPercent });
+    lines.push(...(usageText.length ? usageText : ["Plan usage: no recent figures (Codex records them during a session)."]));
+    lines.push(
+      `Output folder: ${r.output_dir.path} (${r.output_dir.writable ? "writable" : "NOT writable"})`,
+      `Jobs: ${r.jobs.running} running, ${r.jobs.queued} queued`,
+      `Settings: up to ${r.settings.max_concurrent} job${r.settings.max_concurrent === 1 ? "" : "s"} at a time, ` +
+        `${r.settings.wait_seconds}s wait window, ${r.settings.timeout_seconds}s timeout, sandbox ${r.settings.sandbox}, ` +
+        `credits policy "${r.settings.credits_policy}"` +
+        (r.settings.codex_model ? `, model ${r.settings.codex_model}` : "") +
+        (r.settings.codex_effort ? `, effort ${r.settings.codex_effort}` : ""),
+      `Running on Node ${r.node_version} (${r.platform}).`,
+    );
+    if (r.warnings.length) {
+      lines.push("", "Warnings:");
+      for (const w of r.warnings) lines.push(`- ${w}`);
+    }
+    return withData(text(lines), r);
+  }
+
   async function call(name, args = {}, request, extra) {
     try {
       if (name === GENERATE_TOOL.name) return await start(args, request, extra, { forEdit: false });
@@ -890,13 +1006,14 @@ export function createTools({ jobs, config, readUsage = readCodexUsage, history 
       if (name === RESULT_TOOL.name) return await getResult(args, request, extra);
       if (name === CANCEL_TOOL.name) return await cancel(args);
       if (name === LIST_TOOL.name) return await listImages(args);
+      if (name === STATUS_TOOL.name) return await status();
       return errorResult(`Unknown tool: ${name}`);
     } catch (err) {
       return withData(errorResult(formatError(err)), errorData(err));
     }
   }
 
-  return { tools: [GENERATE_TOOL, EDIT_TOOL, RESULT_TOOL, CANCEL_TOOL, LIST_TOOL], call };
+  return { tools: [GENERATE_TOOL, EDIT_TOOL, RESULT_TOOL, CANCEL_TOOL, LIST_TOOL, STATUS_TOOL], call };
 }
 
 function text(lines) {
@@ -905,14 +1022,14 @@ function text(lines) {
 
 /** What the user can do about each kind of failure — appended to the error text. */
 const NEXT_STEPS = {
-  binary_missing: "Install the Codex CLI or the Codex desktop app, or set CODEX_BIN, then retry.",
-  not_signed_in: "Run `codex login` (or sign in from the Codex app), then retry.",
+  binary_missing: "Install the Codex CLI or the Codex desktop app, or set CODEX_BIN, then retry. pixmith_status checks the setup.",
+  not_signed_in: "Run `codex login` (or sign in from the Codex app), then retry. pixmith_status checks the setup.",
   usage_limit:
     "Nothing is wrong with the request. Retry once the ChatGPT plan's limit has reset, or add credits in ChatGPT under Settings > Usage.",
   credits_confirmation_needed: "Ask the user; do not retry with use_credits: true unless they agree.",
   timeout: "Retry, use a smaller size, or raise PIXMITH_TIMEOUT_MS.",
   generation_failed: "If the request was refused, rephrase the prompt; otherwise retry.",
-  no_output: "Retry once. If it keeps failing, run `codex exec \"hello\"` to check that Codex itself works.",
+  no_output: "Retry once. If it keeps failing, call pixmith_status, and run `codex exec \"hello\"` to check that Codex itself works.",
 };
 
 export function formatError(err) {

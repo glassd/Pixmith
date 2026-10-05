@@ -221,6 +221,31 @@ The source file is never modified; the edit is saved as a new PNG. Every finishe
 ends with the exact `edit_image` call that would refine it, so iterating is a one-liner
 for the assistant.
 
+### `pixmith_status` — check the setup
+
+No parameters. Checks everything that decides whether an image can be made, without
+making one (so it uses no plan quota), and says what to do about each problem:
+
+```
+Pixmith 0.5.1: ready to make images.
+
+Codex: version 0.46.0 at /opt/homebrew/bin/codex
+Signed in: yes, with a ChatGPT account
+Plan usage: 12% of the 5-hour limit (resets at 18:40), 3% of the weekly limit (resets Mon at 09:00).
+Output folder: /Users/you/Pixmith/images (writable)
+Jobs: 0 running, 0 queued
+Settings: up to 1 job at a time, 45s wait window, 300s timeout, sandbox workspace-write, credits policy "ask"
+Running on Node 22.12.0 (darwin).
+```
+
+It runs `codex --version` and `codex login status` (neither starts a session) and reads
+the latest plan-usage figures. Problems it reports: Codex not found, not signed in, the
+plan's limit reached, an unwritable output folder. Warnings cover settings that were
+ignored, a stale `CODEX_BIN`, and a Codex signed in with an **API key**, which bills
+images to that API account instead of the ChatGPT plan. Pixmith never reads Codex's
+credentials: with a Codex too old to have `login status`, it only checks whether the
+credentials file exists.
+
 ### Backgrounds
 
 `background: "transparent"` asks for a PNG with an alpha channel: the subject alone, with
@@ -510,6 +535,9 @@ Or add the same `mcpServers` block above to a project-level `.mcp.json`.
 ---
 
 ## Troubleshooting
+
+Start by asking the assistant to run **`pixmith_status`**: it checks Codex, the sign-in,
+plan usage and the output folder, and says what to do about each problem it finds.
 
 | Symptom                              | Cause / fix                                                                 |
 |--------------------------------------|------------------------------------------------------------------------------|

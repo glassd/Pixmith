@@ -1113,6 +1113,55 @@ export function killAllCodex() {
 }
 
 /**
+ * Run a short Codex command such as `--version` or `login status` and collect
+ * its output. Never rejects: resolves { code, stdout, stderr, error } where
+ * `error` is a spawn error code ("ENOENT" when the binary is missing) or
+ * "timeout". Windows `.cmd` shims go through cmd.exe exactly as in runCodex.
+ */
+export function runCodexCommand(args, { timeoutMs = 10_000 } = {}) {
+  return new Promise((resolve) => {
+    const done = (out) => resolve({ code: null, stdout: "", stderr: "", error: null, ...out });
+    const opts = { stdio: ["ignore", "pipe", "pipe"], env: process.env, windowsHide: true };
+    let command = config.codexBin;
+    let spawnArgs = args;
+    if (process.platform === "win32" && !/\.exe$/i.test(config.codexBin)) {
+      try {
+        ({ command, args: spawnArgs } = cmdShellCommand(config.codexBin, args));
+      } catch (err) {
+        done({ error: "unsafe_path", stderr: err.message });
+        return;
+      }
+      opts.shell = true;
+    }
+    let child;
+    try {
+      child = spawn(command, spawnArgs, opts);
+    } catch (err) {
+      done({ error: err.code || "spawn_failed", stderr: err.message });
+      return;
+    }
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (t) => (stdout += t));
+    child.stderr.on("data", (t) => (stderr += t));
+    const timer = setTimeout(() => {
+      killTree(child);
+      done({ stdout, stderr, error: "timeout" });
+    }, timeoutMs);
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      done({ stdout, stderr, error: err.code || "spawn_failed" });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      done({ code, stdout, stderr });
+    });
+  });
+}
+
+/**
  * Spawn codex, feed the prompt via stdin, stream stderr to onProgress, enforce
  * a timeout. Cross-platform: on Windows, `.cmd`/`.bat` shims (e.g. an npm-global
  * `codex.cmd`) cannot be spawned directly, so we run them through a shell and
