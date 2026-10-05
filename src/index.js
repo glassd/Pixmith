@@ -20,7 +20,7 @@ const jobs = new JobManager({
   history,
   log: (job, line) => process.stderr.write(`[codex ${job.id.slice(0, 8)}] ${line}\n`),
 });
-const server = createServer({ jobs, config, history });
+const server = createServer({ jobs, config, history, configWarnings });
 
 // When the client goes away, stop any Codex sessions still running so they do
 // not keep spending the ChatGPT plan's quota on images nobody will collect.

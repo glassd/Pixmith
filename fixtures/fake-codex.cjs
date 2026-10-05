@@ -28,6 +28,23 @@ const writePng = ({ complete = false } = {}) => {
   fs.writeFileSync(path.join(dir, "exec-1.png"), complete ? Buffer.concat([PNG, IEND]) : PNG);
 };
 
+// Short commands answer at once, as the real CLI does.
+if (args[0] === "--version") {
+  process.stdout.write("codex-cli 0.99.0-fake\n");
+  process.exit(0);
+}
+if (args[0] === "login" && args[1] === "status") {
+  // FAKE_LOGIN: chatgpt (default), apikey, out, or unsupported.
+  const login = process.env.FAKE_LOGIN || "chatgpt";
+  if (login === "unsupported") {
+    process.stderr.write("error: unrecognized subcommand 'status'\n");
+    process.exit(2);
+  }
+  const say = { chatgpt: "Logged in using ChatGPT", apikey: "Logged in using an API key - sk-proj-***ABCD", out: "Not logged in" }[login];
+  process.stderr.write(`${say}\n`);
+  process.exit(login === "out" ? 1 : 0);
+}
+
 let stdin = "";
 process.stdin.on("data", (d) => (stdin += d));
 process.stdin.on("end", () => {

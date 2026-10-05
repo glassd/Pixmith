@@ -61,10 +61,17 @@ async function startedCall(t, i = 0) {
 const textOf = (res) => res.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
 const jobIdOf = (res) => textOf(res).match(/job_id: (\S+)/)?.[1];
 
-test("tools: the five tools are listed with schemas", async () => {
+test("tools: the six tools are listed with schemas", async () => {
   const t = await setup();
   try {
-    assert.deepEqual(t.tools.map((x) => x.name), ["generate_image", "edit_image", "get_image_result", "cancel_image", "list_images"]);
+    assert.deepEqual(t.tools.map((x) => x.name), [
+      "generate_image",
+      "edit_image",
+      "get_image_result",
+      "cancel_image",
+      "list_images",
+      "pixmith_status",
+    ]);
     assert.deepEqual(t.tools[1].inputSchema.required, ["image", "prompt"]);
     assert.equal(t.tools[2].inputSchema.required, undefined, "job_id is optional");
   } finally {

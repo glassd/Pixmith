@@ -11,7 +11,7 @@ import { PixmithError } from "../src/codex.js";
 import { ImageHistory } from "../src/history.js";
 import { JobManager } from "../src/jobs.js";
 import { createServer } from "../src/server.js";
-import { CANCEL_OUTPUT_SCHEMA, JOB_OUTPUT_SCHEMA, LIST_OUTPUT_SCHEMA } from "../src/tools.js";
+import { CANCEL_OUTPUT_SCHEMA, JOB_OUTPUT_SCHEMA, LIST_OUTPUT_SCHEMA, STATUS_OUTPUT_SCHEMA } from "../src/tools.js";
 import { noisyPng } from "../fixtures/noisy-png.js";
 
 // End-to-end through a real MCP client. The SDK client checks every result's
@@ -26,7 +26,15 @@ const USAGE = {
   reachedType: null,
 };
 
-async function connect({ structuredOutput, pollWaitMs = 60, usage = USAGE, maxInlineBytes = 1024 * 1024, historyFile = null } = {}) {
+async function connect({
+  structuredOutput,
+  pollWaitMs = 60,
+  usage = USAGE,
+  maxInlineBytes = 1024 * 1024,
+  historyFile = null,
+  runCodexCommand,
+  configWarnings,
+} = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pixmith-server-"));
   const png = path.join(dir, "out.png");
   await fs.writeFile(png, noisyPng(64, 48));
@@ -49,8 +57,18 @@ async function connect({ structuredOutput, pollWaitMs = 60, usage = USAGE, maxIn
     creditsPolicy: "ask",
     usageWarnPercent: 80,
     structuredOutput,
+    // What pixmith_status reports on.
+    codexBin: process.execPath,
+    codexBinNote: null,
+    codexHome: path.join(dir, "codex-home"),
+    defaultOutputDir: path.join(dir, "images"),
+    stateDir: path.join(dir, "state"),
+    maxConcurrent: 1,
+    timeoutMs: 300_000,
+    sandbox: "workspace-write",
+    bypassSandbox: false,
   };
-  const server = createServer({ jobs, config, readUsage: async () => usage, history });
+  const server = createServer({ jobs, config, readUsage: async () => usage, history, runCodexCommand, configWarnings });
   const client = new Client({ name: "test-client", version: "1.0.0" });
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
@@ -106,6 +124,7 @@ test("structured output: every tool declares an output schema", async () => {
     }
     assert.deepEqual(byName.cancel_image.outputSchema, CANCEL_OUTPUT_SCHEMA);
     assert.deepEqual(byName.list_images.outputSchema, LIST_OUTPUT_SCHEMA);
+    assert.deepEqual(byName.pixmith_status.outputSchema, STATUS_OUTPUT_SCHEMA);
   } finally {
     await t.close();
   }
@@ -461,5 +480,48 @@ test("generation options: bad values are refused before any job starts", async (
     assert.equal(t.calls.length, 0);
   } finally {
     await t.close();
+  }
+});
+
+test("pixmith_status: reports readiness, and each problem with its next step", async () => {
+  const fakeCodex = (login) => async (args) =>
+    args[0] === "--version"
+      ? { code: 0, stdout: "codex-cli 0.46.0\n", stderr: "", error: null }
+      : { code: login === "out" ? 1 : 0, stdout: "", stderr: login === "out" ? "Not logged in\n" : "Logged in using ChatGPT\n", error: null };
+
+  const ready = await connect({ runCodexCommand: fakeCodex("chatgpt") });
+  try {
+    const res = await ready.callTool("pixmith_status");
+    const data = res.structuredContent;
+    assertDeclared(data, STATUS_OUTPUT_SCHEMA);
+    assert.equal(data.status, "ready");
+    assert.equal(data.codex.version, "0.46.0");
+    assert.equal(data.sign_in.state, "chatgpt");
+    assert.equal(data.usage.plan, "plus");
+    assert.deepEqual(data.jobs, { running: 0, queued: 0 });
+    const text = res.content[0].text;
+    assert.match(text, /^Pixmith test: ready to make images\.$/m);
+    assert.match(text, /^Codex: version 0\.46\.0 at /m);
+    assert.match(text, /^Signed in: yes, with a ChatGPT account$/m);
+    assert.match(text, /^Plan usage: 85% of the 5-hour limit/m);
+    assert.match(text, /^Settings: up to 1 job at a time, 0s wait window, 300s timeout, sandbox workspace-write, credits policy "ask"$/m);
+    assert.doesNotMatch(text, /Problems:|Warnings:/);
+  } finally {
+    await ready.close();
+  }
+
+  const broken = await connect({ runCodexCommand: fakeCodex("out"), usage: null, configWarnings: ["PIXMITH_X was ignored."] });
+  try {
+    const res = await broken.callTool("pixmith_status");
+    assert.equal(res.isError, undefined, "a problem found is a result, not a failed call");
+    assert.equal(res.structuredContent.status, "problems");
+    assert.equal(res.structuredContent.usage, null);
+    const text = res.content[0].text;
+    assert.match(text, /^Pixmith test: 1 problem found\.$/m);
+    assert.match(text, /^- Codex is not signed in\. Next step: Run `codex login`/m);
+    assert.match(text, /^Plan usage: no recent figures/m);
+    assert.match(text, /^Warnings:\n- PIXMITH_X was ignored\.$/m);
+  } finally {
+    await broken.close();
   }
 });

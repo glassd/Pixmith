@@ -138,6 +138,11 @@ export class JobManager {
     return ACTIVE.has(job.status);
   }
 
+  /** How many jobs are running and waiting right now. */
+  counts() {
+    return { running: this.running, queued: this.queue.length };
+  }
+
   queuePosition(id) {
     const i = this.queue.indexOf(id);
     return i === -1 ? 0 : i + 1;
