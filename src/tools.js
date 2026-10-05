@@ -86,6 +86,7 @@ export const JOB_OUTPUT_SCHEMA = {
     bytes: { type: "integer" },
     source_image: { type: "string", description: "The image an edit was made from." },
     codex_copy: { type: "string", description: "Codex's own copy of the PNG under CODEX_HOME." },
+    metadata_path: { type: "string", description: "The JSON sidecar beside the PNG recording its prompt, sizes and sources." },
     inline_image: {
       type: ["object", "null"],
       description: "The image sent in `content`; null when none was sent.",
@@ -453,6 +454,7 @@ export function createTools({ jobs, config, readUsage = readCodexUsage }) {
     ];
     if (job.mode === "edit" && result.inputImages?.length) lines.push(`Edited from: ${result.inputImages[0]}`);
     if (result.codexHomeCopy && result.codexHomeCopy !== result.path) lines.push(`Codex copy: ${result.codexHomeCopy}`);
+    if (result.metadataPath) lines.push(`Metadata: ${result.metadataPath}`);
     // Read once per job: the figure describes the moment the job finished, and a
     // result can be fetched several times.
     if (!job.usageReport) {
@@ -508,6 +510,7 @@ export function createTools({ jobs, config, readUsage = readCodexUsage }) {
         elapsed_seconds: secs(jobs.elapsedMs(job)),
         source_image: job.mode === "edit" ? result.inputImages?.[0] : undefined,
         codex_copy: result.codexHomeCopy && result.codexHomeCopy !== result.path ? result.codexHomeCopy : undefined,
+        metadata_path: result.metadataPath ?? undefined,
         inline_image: job.inline?.item ? job.inline.meta : null,
         usage: job.usageReport.summary,
       },

@@ -280,6 +280,35 @@ script can read the outcome without parsing text. `generate_image`, `edit_image`
 Set `PIXMITH_STRUCTURED_OUTPUT=false` to leave it out, for a client that mishandles
 structured tool results.
 
+### Metadata sidecar
+
+Every image gets a small JSON file beside it with the same name (`a-red-fox-….png` →
+`a-red-fox-….json`), recording how it was made:
+
+```json
+{
+  "pixmith_version": "0.5.1",
+  "created_at": "2026-10-05T21:40:12.345Z",
+  "mode": "edit",
+  "prompt": "make the sky a stormy purple; keep everything else unchanged",
+  "image": "make-the-sky-a-stormy-purple-keep-everyt-….png",
+  "sha256": "9b1f…",
+  "size": "1536x1024", "width": 1536, "height": 1024,
+  "requested_size": "auto",
+  "source_image": "/abs/path/images/a-red-fox-….png",
+  "reference_images": [],
+  "codex_session_id": "0199…",
+  "duration_ms": 61234
+}
+```
+
+An edit names the image it was made from, so a chain of edits can be followed back to
+the original prompt; `sha256` identifies the image even after it is moved or renamed.
+The metadata sits beside the PNG rather than inside it, so the image is exactly what the
+model produced and sharing it never shares the prompt. The result's `Metadata:` line
+(`metadata_path` in [structured results](#structured-results)) gives its path. Set
+`PIXMITH_METADATA=false` to stop writing it.
+
 ### Plan usage and credits
 
 Codex records your ChatGPT plan's limits in its session logs. Pixmith reads the latest
@@ -363,6 +392,7 @@ when it differs.
 | `PIXMITH_MAX_CONCURRENT`   | `1`                                                  | How many Codex generations may run at once. Extra jobs queue.   |
 | `PIXMITH_RETURN_IMAGE`     | `true`                                               | Set `false` to return only the path, never inline bytes.        |
 | `PIXMITH_STRUCTURED_OUTPUT` | `true`                                              | Declare an `outputSchema` on each tool and return `structuredContent` next to the text. See [structured results](#structured-results). |
+| `PIXMITH_METADATA`        | `true`                                               | Write a `<image>.json` sidecar beside each PNG with its prompt, sizes, sources and SHA-256. See [metadata sidecar](#metadata-sidecar). |
 | `PIXMITH_MAX_INLINE_BYTES` | `696320` (680 KB)                                    | Byte budget for the inline image. A PNG over it is sent as a JPEG preview that fits (quality 85, long edge at most 2048px, downscaled further only if needed). The default keeps the whole result under Claude Desktop's 1 MB tool-result cap, since base64 adds a third. Raise it only for clients without that cap. |
 
 See [`.env.example`](.env.example) for a copy-paste starting point.

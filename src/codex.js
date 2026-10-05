@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import fssync from "node:fs";
 import os from "node:os";
@@ -480,6 +481,24 @@ export async function detectImageType(filePath) {
   }
 }
 
+/**
+ * Write `<image>.json` beside a produced PNG, recording what was asked for and
+ * what came out, so an image can be traced back to its prompt (and an edit to
+ * its source) later. It sits beside the PNG rather than inside it: the image
+ * stays byte-for-byte what the model produced, and sharing a picture never
+ * shares its prompt. Never overwrites an existing file. Best-effort: returns
+ * the path written, or null.
+ */
+export async function writeMetadata(pngPath, meta) {
+  const file = pngPath.replace(/\.png$/i, "") + ".json";
+  try {
+    await fs.writeFile(file, `${JSON.stringify(meta, null, 2)}\n`, { flag: "wx" });
+    return file;
+  } catch {
+    return null;
+  }
+}
+
 export const MAX_INPUT_IMAGES = 4;
 export const MAX_INPUT_IMAGE_BYTES = 20 * 1024 * 1024;
 
@@ -568,7 +587,7 @@ export function detectAuthFailure(stderr, stdout) {
  * @param {AbortSignal} [args.signal] Abort to cancel: the Codex process tree is killed and a "cancelled" error is thrown.
  * @param {(stage:string)=>void} [args.onStage] Called as the run moves through STAGE_LABELS keys.
  * @param {(line:string)=>void} [args.onProgress] Optional stderr progress sink.
- * @returns {Promise<{path:string, size:string, requestedSize:string, sizeNote:string, width:number|null, height:number|null, bytes:number, codexHomeCopy:string|null, sessionId:string|null, mode:string, inputImages:string[], durationMs:number}>}
+ * @returns {Promise<{path:string, size:string, requestedSize:string, sizeNote:string, width:number|null, height:number|null, bytes:number, codexHomeCopy:string|null, sessionId:string|null, mode:string, inputImages:string[], metadataPath:string|null, durationMs:number}>}
  *   `size` is the actual "WIDTHxHEIGHT" read from the PNG (falls back to the
  *   requested size if the header can't be read); `requestedSize` is what was
  *   asked of Codex.
@@ -788,9 +807,32 @@ export async function generateImage({ prompt, size, outputDir, images, mode = "g
     const st = await fs.stat(finalPath);
     if (st.size && (await isPng(finalPath))) {
       const dims = await readPngDimensions(finalPath);
+      const size = dims ? `${dims.width}x${dims.height}` : sizeValue;
+      // Only for our own copy: a fallback path inside CODEX_HOME gets no sidecar.
+      let metadataPath = null;
+      if (config.writeMetadata && finalPath === targetPath) {
+        const editing = mode === "edit";
+        metadataPath = await writeMetadata(finalPath, {
+          pixmith_version: config.version,
+          created_at: new Date().toISOString(),
+          mode,
+          prompt: prompt.trim(),
+          image: path.basename(finalPath),
+          sha256: createHash("sha256").update(await fs.readFile(finalPath)).digest("hex"),
+          size,
+          width: dims?.width ?? null,
+          height: dims?.height ?? null,
+          requested_size: sizeValue,
+          ...(sizeNote ? { size_note: sizeNote } : {}),
+          ...(editing ? { source_image: inputImages[0] } : {}),
+          reference_images: editing ? inputImages.slice(1) : inputImages,
+          codex_session_id: sessionId,
+          duration_ms: Date.now() - startedAt,
+        });
+      }
       return {
         path: path.resolve(finalPath),
-        size: dims ? `${dims.width}x${dims.height}` : sizeValue,
+        size,
         requestedSize: sizeValue,
         sizeNote,
         width: dims?.width ?? null,
@@ -801,6 +843,7 @@ export async function generateImage({ prompt, size, outputDir, images, mode = "g
         mode,
         inputImages,
         stoppedEarly: Boolean(run.stoppedEarly),
+        metadataPath,
         durationMs: Date.now() - startedAt,
       };
     }

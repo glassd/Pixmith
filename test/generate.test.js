@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -22,7 +23,8 @@ process.env.PIXMITH_FAST_PROMPT = "true";
 process.env.PIXMITH_CODEX_MODEL = "gpt-test-mini";
 process.env.PIXMITH_CODEX_EFFORT = "low";
 
-const { generateImage, listRolloutLogs } = await import("../src/codex.js");
+const { generateImage, listRolloutLogs, writeMetadata } = await import("../src/codex.js");
+const { config } = await import("../src/config.js");
 const { readUsage } = await import("../src/usage.js");
 const lastCall = async () => JSON.parse(await fs.readFile(path.join(codexHome, "last-call.json"), "utf8"));
 const reset = () => fs.rm(path.join(codexHome, "generated_images"), { recursive: true, force: true });
@@ -252,4 +254,75 @@ test("listRolloutLogs: reads only the newest day folders unless asked for all", 
   } finally {
     await fs.rm(sessions, { recursive: true, force: true });
   }
+});
+
+test("generateImage: writes a metadata sidecar beside the PNG", async () => {
+  process.env.FAKE_MODE = "ok";
+  await reset();
+  const res = await generateImage({ prompt: "  a fox in snow  ", size: "1000x1000" });
+  assert.equal(res.metadataPath, res.path.replace(/\.png$/, ".json"));
+  const meta = JSON.parse(await fs.readFile(res.metadataPath, "utf8"));
+  const png = await fs.readFile(res.path);
+  assert.deepEqual(
+    { ...meta, created_at: undefined, duration_ms: undefined },
+    {
+      pixmith_version: config.version,
+      created_at: undefined,
+      mode: "generate",
+      prompt: "a fox in snow",
+      image: path.basename(res.path),
+      sha256: createHash("sha256").update(png).digest("hex"),
+      size: "1024x768",
+      width: 1024,
+      height: 768,
+      requested_size: "1008x1008",
+      size_note: "rounded 1000x1000 to 1008x1008 (each edge must be a multiple of 16)",
+      reference_images: [],
+      codex_session_id: "0a0b0c0d-1111-2222-3333-444455556666",
+      duration_ms: undefined,
+    },
+  );
+  assert.ok(!Number.isNaN(Date.parse(meta.created_at)));
+  assert.ok(Number.isInteger(meta.duration_ms) && meta.duration_ms >= 0);
+});
+
+test("generateImage: an edit's sidecar names its source and reference images", async () => {
+  process.env.FAKE_MODE = "ok";
+  await reset();
+  const seed = await generateImage({ prompt: "seed" });
+  const src = path.join(root, "meta-src.png");
+  const ref = path.join(root, "meta-ref.png");
+  await fs.copyFile(seed.path, src);
+  await fs.copyFile(seed.path, ref);
+  await reset();
+
+  const res = await generateImage({ prompt: "make it night", mode: "edit", images: [src, ref] });
+  const meta = JSON.parse(await fs.readFile(res.metadataPath, "utf8"));
+  assert.equal(meta.mode, "edit");
+  assert.equal(meta.prompt, "make it night");
+  assert.equal(meta.source_image, src);
+  assert.deepEqual(meta.reference_images, [ref]);
+  assert.equal(meta.requested_size, "auto");
+});
+
+test("generateImage: PIXMITH_METADATA=false writes no sidecar", async () => {
+  process.env.FAKE_MODE = "ok";
+  await reset();
+  config.writeMetadata = false;
+  try {
+    const res = await generateImage({ prompt: "a fox" });
+    assert.equal(res.metadataPath, null);
+    await assert.rejects(fs.access(res.path.replace(/\.png$/, ".json")));
+  } finally {
+    config.writeMetadata = true;
+  }
+});
+
+test("writeMetadata: never overwrites, and a failure returns null instead of throwing", async () => {
+  const png = path.join(root, "taken.png");
+  const json = path.join(root, "taken.json");
+  await fs.writeFile(json, "keep me");
+  assert.equal(await writeMetadata(png, { prompt: "x" }), null);
+  assert.equal(await fs.readFile(json, "utf8"), "keep me");
+  assert.equal(await writeMetadata(path.join(root, "no-such-dir", "a.png"), { prompt: "x" }), null);
 });

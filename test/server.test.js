@@ -63,6 +63,7 @@ async function connect({ structuredOutput, pollWaitMs = 60, usage = USAGE, maxIn
     codexHomeCopy: "/codex/home/ig_1.png",
     inputImages: [],
     sessionId: "s1",
+    metadataPath: "/abs/images/out.json",
     ...extra,
   });
   const callTool = (name, args = {}) => client.callTool({ name, arguments: args });
@@ -120,6 +121,8 @@ test("structured output: a finished image carries its path, size, inline image a
     assert.equal(data.path, t.png);
     assert.deepEqual([data.size, data.width, data.height, data.requested_size, data.bytes], ["64x48", 64, 48, "1024x1024", 1234]);
     assert.equal(data.codex_copy, "/codex/home/ig_1.png");
+    assert.equal(data.metadata_path, "/abs/images/out.json");
+    assert.match(res.content[0].text, /^Metadata: \/abs\/images\/out\.json$/m);
     assert.equal(data.size_note, undefined, "an empty size note is left out");
     assert.equal(data.source_image, undefined);
     assert.deepEqual(data.inline_image, { mime_type: "image/png", width: 64, height: 48, preview: false });
@@ -161,8 +164,9 @@ test("structured output: an edit reports its source image", async () => {
   const t = await connect({ pollWaitMs: 2000 });
   try {
     const pending = t.callTool("edit_image", { image: t.png, prompt: "make it night" });
-    (await startedCall(t)).resolve(t.result({ inputImages: [t.png] }));
+    (await startedCall(t)).resolve(t.result({ inputImages: [t.png], metadataPath: null }));
     const data = (await pending).structuredContent;
+    assert.equal(data.metadata_path, undefined, "no sidecar, no field");
     assert.equal(data.mode, "edit");
     assert.equal(data.source_image, t.png);
   } finally {
