@@ -75,10 +75,11 @@ function envBool(name, fallback) {
 export function parseAllowedDirs(raw, warnings = configWarnings, delimiter = path.delimiter) {
   if (raw == null || raw.trim() === "") return null;
   const dirs = [];
-  for (const entry of raw
+  const entries = raw
     .split(delimiter)
     .map((e) => e.trim())
-    .filter(Boolean)) {
+    .filter(Boolean);
+  for (const entry of entries) {
     if (path.isAbsolute(entry)) dirs.push(path.resolve(entry));
     else warnings.push(`PIXMITH_ALLOWED_DIRS entry "${entry}" is not an absolute path and was ignored.`);
   }
