@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import jpeg from "jpeg-js";
+import { PNG } from "pngjs";
 
 import { downscale, makeInlineImage } from "../src/preview.js";
 import { noisyPng } from "../fixtures/noisy-png.js";
@@ -60,6 +61,39 @@ test("makeInlineImage: transparency is flattened onto white, and an impossible b
 
     assert.equal(await makeInlineImage(file, 200), null);
     await assert.rejects(makeInlineImage(path.join(dir, "missing.png"), 1000));
+  }));
+
+test("makeInlineImage: a preview's long edge is capped at 2048px even when a bigger one would fit", () =>
+  withDir(async (dir) => {
+    // A grainy gradient: large as a PNG, small as a JPEG, so a full-size
+    // 2400px JPEG would fit the budget — but it must still be scaled down.
+    const w = 2400;
+    const h = 1200;
+    const png = new PNG({ width: w, height: h });
+    let seed = 7;
+    for (let i = 0; i < png.data.length; i += 4) {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      const v = (((i / 4) % w) * 255) / w + (seed % 16);
+      png.data[i] = png.data[i + 1] = png.data[i + 2] = v & 0xff;
+      png.data[i + 3] = 255;
+    }
+    const file = path.join(dir, "wide.png");
+    const data = PNG.sync.write(png);
+    await fs.writeFile(file, data);
+    const budget = 400 * 1024;
+    assert.ok(data.length > budget, "the fixture must start over budget");
+    assert.ok(jpeg.encode({ data: png.data, width: w, height: h }, 85).data.length <= budget, "a full-size JPEG would fit");
+
+    const out = await makeInlineImage(file, budget);
+    assert.equal(out.preview, true);
+    assert.deepEqual([out.width, out.height], [2048, 1024]);
+  }));
+
+test("makeInlineImage: an unreadable PNG rejects instead of hanging", () =>
+  withDir(async (dir) => {
+    const file = path.join(dir, "broken.png");
+    await fs.writeFile(file, Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(4096, 7)]));
+    await assert.rejects(makeInlineImage(file, 1024));
   }));
 
 test("downscale: averages source pixels", () => {

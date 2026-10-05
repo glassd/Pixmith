@@ -22,7 +22,7 @@ process.env.PIXMITH_FAST_PROMPT = "true";
 process.env.PIXMITH_CODEX_MODEL = "gpt-test-mini";
 process.env.PIXMITH_CODEX_EFFORT = "low";
 
-const { generateImage } = await import("../src/codex.js");
+const { generateImage, listRolloutLogs } = await import("../src/codex.js");
 const { readUsage } = await import("../src/usage.js");
 const lastCall = async () => JSON.parse(await fs.readFile(path.join(codexHome, "last-call.json"), "utf8"));
 const reset = () => fs.rm(path.join(codexHome, "generated_images"), { recursive: true, force: true });
@@ -155,6 +155,12 @@ test("generateImage: classifies usage limits and refusals", async () => {
   await assert.rejects(generateImage({ prompt: "a fox" }), (e) => e.kind === "generation_failed" && /content policy/.test(e.message));
 });
 
+test("generateImage: text split mid-character across output chunks is decoded intact", async () => {
+  await reset();
+  process.env.FAKE_MODE = "refuse-split";
+  await assert.rejects(generateImage({ prompt: "a fox" }), (e) => e.kind === "generation_failed" && e.message.endsWith("refusé — 内容"));
+});
+
 test("readUsage: newest session log wins, the job's own log is preferred, big logs are read from the tail", async () => {
   const dir = path.join(codexHome, "sessions", "2026", "09", "21");
   await fs.mkdir(dir, { recursive: true });
@@ -205,4 +211,45 @@ test("generateImage: an early-stopped edit still reports its session id and inpu
   assert.equal(res.sessionId, "0a0b0c0d-1111-2222-3333-444455556666");
   assert.deepEqual(res.inputImages, [src]);
   assert.equal(res.requestedSize, "auto");
+});
+
+test("generateImage: without a session id, only a folder that appeared during the run is used", async () => {
+  process.env.FAKE_MODE = "anon";
+  await reset();
+  // An older session's image, made to look newest, must not be mistaken for this run's.
+  const old = path.join(codexHome, "generated_images", "older-session", "old.png");
+  await fs.mkdir(path.dirname(old), { recursive: true });
+  await fs.writeFile(old, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...Buffer.alloc(64)]));
+  const future = new Date(Date.now() + 3_600_000);
+  await fs.utimes(old, future, future);
+
+  const res = await generateImage({ prompt: "a fox" });
+  assert.equal(res.sessionId, null);
+  assert.equal(res.codexHomeCopy, path.join(codexHome, "generated_images", "0a0b0c0d-1111-2222-3333-444455556666", "exec-1.png"));
+});
+
+test("listRolloutLogs: reads only the newest day folders unless asked for all", async () => {
+  const sessions = path.join(codexHome, "sessions");
+  const days = ["2025/12/31", "2026/09/01", "2026/09/02", "2026/09/10", "2026/10/01"];
+  for (const day of days) {
+    const dir = path.join(sessions, ...day.split("/"));
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, `rollout-${day.replaceAll("/", "-")}.jsonl`), "{}\n");
+  }
+  try {
+    const names = (m) => [...m.keys()].map((p) => path.basename(p)).sort();
+    assert.deepEqual(names(await listRolloutLogs()), ["rollout-2026-09-02.jsonl", "rollout-2026-09-10.jsonl", "rollout-2026-10-01.jsonl"]);
+    assert.equal((await listRolloutLogs({ days: Infinity })).size, days.length);
+  } finally {
+    await fs.rm(sessions, { recursive: true, force: true });
+  }
+
+  // A layout without date folders is listed in full.
+  await fs.mkdir(sessions, { recursive: true });
+  await fs.writeFile(path.join(sessions, "rollout-flat.jsonl"), "{}\n");
+  try {
+    assert.deepEqual([...(await listRolloutLogs()).keys()], [path.join(sessions, "rollout-flat.jsonl")]);
+  } finally {
+    await fs.rm(sessions, { recursive: true, force: true });
+  }
 });

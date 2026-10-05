@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import { Worker } from "node:worker_threads";
 
 import jpeg from "jpeg-js";
 import { PNG } from "pngjs";
@@ -7,9 +8,14 @@ import { PNG } from "pngjs";
 // over 1 MB — and a gpt-image-2 PNG is 2-3 MB (4 MB once base64-encoded). So
 // the full-resolution PNG stays on disk, and what travels inline is a JPEG
 // preview that fits the budget. Pure JavaScript on purpose: no native modules,
-// identical behaviour on macOS, Windows and Linux.
+// identical behaviour on macOS, Windows and Linux. Being pure JavaScript, the
+// decode and encode run in a worker thread so they never stall the server.
 
-/** Long-edge sizes tried in order until the preview fits. */
+/**
+ * Long-edge sizes tried in order until the preview fits. The largest is also
+ * the cap: vision models downscale anything bigger, so a full 4K preview would
+ * only cost encode time.
+ */
 const LONG_EDGES = [2048, 1536, 1280, 1024, 768, 512, 384];
 const QUALITIES = [85, 72];
 
@@ -60,6 +66,42 @@ export function downscale(src, sw, sh, dw, dh) {
 }
 
 /**
+ * Encode a JPEG preview of PNG bytes within `budgetBytes`. Synchronous and
+ * CPU-heavy (about a second for a 4K image): call it through makeInlineImage,
+ * which runs it in a worker. Returns { data, width, height } or null.
+ */
+export function encodePreview(original, budgetBytes) {
+  const png = PNG.sync.read(original);
+  const flat = flatten(png.data);
+  const longEdge = Math.max(png.width, png.height);
+  const edges = [...new Set([Math.min(longEdge, LONG_EDGES[0]), ...LONG_EDGES.filter((e) => e < longEdge)])];
+
+  for (const edge of edges) {
+    const scale = edge / longEdge;
+    const w = Math.max(1, Math.round(png.width * scale));
+    const h = Math.max(1, Math.round(png.height * scale));
+    const pixels = scale === 1 ? flat : downscale(flat, png.width, png.height, w, h);
+    for (const quality of QUALITIES) {
+      const { data } = jpeg.encode({ data: pixels, width: w, height: h }, quality);
+      if (data.length <= budgetBytes) return { data, width: w, height: h };
+    }
+  }
+  return null;
+}
+
+/** Run encodePreview in a worker thread; rejects if the PNG cannot be decoded. */
+function encodeInWorker(original, budgetBytes) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL("./preview-worker.js", import.meta.url), {
+      workerData: { png: original, budgetBytes },
+    });
+    worker.once("message", resolve);
+    worker.once("error", reject);
+    worker.once("exit", (code) => reject(new Error(`the preview worker exited with code ${code}`)));
+  });
+}
+
+/**
  * Produce the inline version of a PNG within `budgetBytes` (raw bytes, before
  * base64). Returns
  *   { data: Buffer, mimeType, width, height, preview: boolean }
@@ -71,23 +113,9 @@ export async function makeInlineImage(pngPath, budgetBytes) {
   if (original.length <= budgetBytes) {
     return { data: original, mimeType: "image/png", width: null, height: null, preview: false };
   }
-
-  const png = PNG.sync.read(original);
-  const flat = flatten(png.data);
-  const longEdge = Math.max(png.width, png.height);
-  const edges = [...new Set([longEdge, ...LONG_EDGES.filter((e) => e < longEdge)])];
-
-  for (const edge of edges) {
-    const scale = edge / longEdge;
-    const w = Math.max(1, Math.round(png.width * scale));
-    const h = Math.max(1, Math.round(png.height * scale));
-    const pixels = scale === 1 ? flat : downscale(flat, png.width, png.height, w, h);
-    for (const quality of QUALITIES) {
-      const { data } = jpeg.encode({ data: pixels, width: w, height: h }, quality);
-      if (data.length <= budgetBytes) {
-        return { data, mimeType: "image/jpeg", width: w, height: h, preview: true };
-      }
-    }
-  }
-  return null;
+  const out = await encodeInWorker(original, budgetBytes);
+  if (!out) return null;
+  // Buffers arrive from the worker as plain Uint8Arrays.
+  const data = Buffer.from(out.data.buffer, out.data.byteOffset, out.data.byteLength);
+  return { data, mimeType: "image/jpeg", width: out.width, height: out.height, preview: true };
 }

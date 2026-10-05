@@ -16,6 +16,8 @@ export class DurationStats {
     this.defaults = defaults;
     this.keep = keep;
     this.samples = {};
+    // Settles once every save requested so far has been written.
+    this.saved = Promise.resolve();
     if (file) {
       try {
         const data = JSON.parse(fssync.readFileSync(file, "utf8"));
@@ -36,9 +38,24 @@ export class DurationStats {
     list.push(Math.round(ms));
     while (list.length > this.keep) list.shift();
     if (!this.file) return;
-    fs.mkdir(path.dirname(this.file), { recursive: true })
-      .then(() => fs.writeFile(this.file, JSON.stringify({ samples: this.samples })))
-      .catch(() => {});
+    this.saved = this.saved.then(() => this.save());
+  }
+
+  /**
+   * Persist the samples. Saves are queued so they land in order, and each one
+   * writes a temporary file that is renamed into place, so a crash or another
+   * Pixmith process mid-write never leaves a half-written history behind.
+   * Never rejects.
+   */
+  async save() {
+    const tmp = `${this.file}.${process.pid}-${randomUUID()}.tmp`;
+    try {
+      await fs.mkdir(path.dirname(this.file), { recursive: true });
+      await fs.writeFile(tmp, JSON.stringify({ samples: this.samples }));
+      await fs.rename(tmp, this.file);
+    } catch {
+      await fs.unlink(tmp).catch(() => {});
+    }
   }
 
   /** Median of the recent durations for `mode`, or the default when there is no history. */
