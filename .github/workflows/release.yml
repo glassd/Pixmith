@@ -1,0 +1,54 @@
+name: Release
+
+# Runs only when a version tag is pushed, e.g.:
+#   git tag v0.6.0 && git push origin v0.6.0
+# It builds the Claude Desktop bundle and attaches it to a GitHub Release.
+# Publishing to npm happens only if an NPM_TOKEN repository secret exists.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the GitHub Release
+  id-token: write # npm provenance
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Tag matches package.json and manifest.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          man="$(node -p "require('./manifest.json').version")"
+          echo "tag=$tag package.json=$pkg manifest.json=$man"
+          test "$tag" = "$pkg" && test "$tag" = "$man"
+
+      - run: npm ci
+      - run: npm test
+      - run: npm ci --omit=dev
+      - run: npx --yes @anthropic-ai/mcpb@2.1.2 validate manifest.json
+      - run: npm run bundle
+      - run: node scripts/check-bundle.js dist/pixmith.mcpb
+      - run: mv dist/pixmith.mcpb "dist/pixmith-${GITHUB_REF_NAME#v}.mcpb"
+
+      - name: GitHub Release with the bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/pixmith-*.mcpb --title "Pixmith ${GITHUB_REF_NAME}" --generate-notes
+
+      - name: Publish to npm
+        if: env.NPM_TOKEN != ''
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public
