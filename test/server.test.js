@@ -557,3 +557,25 @@ test("allowed folders: output_dir outside them is refused before any job, and th
     await t.close();
   }
 });
+
+test("pixmith_status: points out Codex's duplicate copies and how to delete them", async () => {
+  const state = await fs.mkdtemp(path.join(os.tmpdir(), "pixmith-state-"));
+  const historyFile = path.join(state, "history.jsonl");
+  const copy = path.join(state, "ig_1.png");
+  await fs.writeFile(copy, "12345");
+  await fs.writeFile(historyFile, `${JSON.stringify({ job_id: "j1", path: path.join(state, "own.png"), codex_copy: copy })}\n`);
+  const fakeCodex = async (args) =>
+    args[0] === "--version" ? { code: 0, stdout: "codex-cli 0.46.0", stderr: "", error: null } : { code: 0, stdout: "", stderr: "Logged in using ChatGPT", error: null };
+  const t = await connect({ historyFile, runCodexCommand: fakeCodex });
+  try {
+    const res = await t.callTool("pixmith_status");
+    assert.deepEqual(res.structuredContent.codex_copies, { count: 1, bytes: 5, policy: "keep" });
+    assert.match(
+      res.content[0].text,
+      /^Codex's duplicate copies: 1 image, 5 bytes under CODEX_HOME\. Run `npx pixmith prune-codex-copies` .* or set PIXMITH_CODEX_COPIES=remove so new ones are not kept\.$/m,
+    );
+  } finally {
+    await t.close();
+    await fs.rm(state, { recursive: true, force: true });
+  }
+});

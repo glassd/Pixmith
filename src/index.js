@@ -9,6 +9,13 @@ import { ImageHistory } from "./history.js";
 import { DurationStats, JobManager } from "./jobs.js";
 import { createServer } from "./server.js";
 
+// `pixmith <command>` runs a one-off command instead of the server. Anything
+// else (including no arguments) starts the server, as MCP clients expect.
+{
+  const { COMMANDS, runCli } = await import("./cli.js");
+  if (COMMANDS.has(process.argv[2])) process.exit(await runCli(process.argv.slice(2)));
+}
+
 // Wiring only: the MCP server is in server.js, the tools in tools.js, the queue
 // in jobs.js, and the Codex driver in codex.js.
 

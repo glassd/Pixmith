@@ -158,6 +158,7 @@ settings, all optional:
 | Image folder | Where images go. Empty: `Pictures/Pixmith` in your home folder. |
 | Other folder images may be saved in | When set, Claude may save only into this folder or the image folder ([`PIXMITH_ALLOWED_DIRS`](#security-notes)). |
 | Images at once | How many images may render at the same time (default 1). |
+| Delete Codex's duplicate copies | Off by default. When on, Codex's own copy of each image is deleted once Pixmith's is saved ([details](#codexs-duplicate-copies)). |
 
 To build the bundle yourself: `npm ci --omit=dev && npm run bundle` writes
 `dist/pixmith.mcpb`.
@@ -430,6 +431,25 @@ model produced and sharing it never shares the prompt. The result's `Metadata:` 
 (`metadata_path` in [structured results](#structured-results)) gives its path. Set
 `PIXMITH_METADATA=false` to stop writing it.
 
+### Codex's duplicate copies
+
+Codex keeps its own copy of every image under `~/.codex/generated_images/` (2–3 MB
+each), next to the one Pixmith saves for you, so by default every image takes twice the
+space. `pixmith_status` shows how much that is. Two ways to reclaim it:
+
+- **New images:** set `PIXMITH_CODEX_COPIES=remove`, and Pixmith deletes Codex's copy
+  (and its emptied session folder) as soon as its own copy is saved. The default is
+  `keep`, because those files belong to Codex and the Codex app may show them.
+- **Existing images:** run `npx pixmith prune-codex-copies` (from a source checkout:
+  `node src/index.js prune-codex-copies`); add `--dry-run` to see what it would delete
+  first. It works from the [image history](#list_images--find-earlier-images) and deletes
+  a Codex copy only when Pixmith's copy still exists with exactly the same bytes, and only
+  inside `generated_images` (a symlink cannot lead it anywhere else).
+
+Codex's session logs (`~/.codex/sessions/`) also carry each image, base64-encoded.
+Pixmith leaves those alone: Codex uses them for its history, and Pixmith reads the plan's
+usage from them.
+
 ### Plan usage and credits
 
 Codex records your ChatGPT plan's limits in its session logs. Pixmith reads the latest
@@ -514,6 +534,7 @@ when it differs.
 | `PIXMITH_MAX_CONCURRENT`   | `1`                                                  | How many Codex generations may run at once. Extra jobs queue.   |
 | `PIXMITH_RETURN_IMAGE`     | `true`                                               | Set `false` to return only the path, never inline bytes.        |
 | `PIXMITH_STRUCTURED_OUTPUT` | `true`                                              | Declare an `outputSchema` on each tool and return `structuredContent` next to the text. See [structured results](#structured-results). |
+| `PIXMITH_CODEX_COPIES`    | `keep`                                               | `remove` deletes Codex's own copy of each image once Pixmith's is saved. See [Codex's duplicate copies](#codexs-duplicate-copies). |
 | `PIXMITH_METADATA`        | `true`                                               | Write a `<image>.json` sidecar beside each PNG with its prompt, sizes, sources and SHA-256. See [metadata sidecar](#metadata-sidecar). |
 | `PIXMITH_MAX_INLINE_BYTES` | `696320` (680 KB)                                    | Byte budget for the inline image. A PNG over it is sent as a JPEG preview that fits (quality 85, long edge at most 2048px, downscaled further only if needed). The default keeps the whole result under Claude Desktop's 1 MB tool-result cap, since base64 adds a third. Raise it only for clients without that cap. |
 
