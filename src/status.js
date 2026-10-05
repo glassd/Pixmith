@@ -2,6 +2,7 @@ import { constants, promises as fs } from "node:fs";
 import path from "node:path";
 
 import { runCodexCommand } from "./codex.js";
+import { codexCopyStats } from "./prune.js";
 import { limitReached, usageSummary } from "./usage.js";
 
 // pixmith_status: everything that decides whether an image can be made, checked
@@ -66,13 +67,15 @@ export async function checkStatus({
   jobs = null,
   readUsage = async () => null,
   runCommand = runCodexCommand,
+  history = null,
 }) {
-  const [versionRun, loginRun, usage, outputOk, stateOk] = await Promise.all([
+  const [versionRun, loginRun, usage, outputOk, stateOk, codexCopies] = await Promise.all([
     runCommand(["--version"]),
     runCommand(["login", "status"]),
     readUsage().catch(() => null),
     writable(config.defaultOutputDir),
     writable(config.stateDir),
+    codexCopyStats(history),
   ]);
 
   const problems = [];
@@ -164,6 +167,7 @@ export async function checkStatus({
     output_dir: { path: config.defaultOutputDir, writable: outputOk },
     state_dir: { path: config.stateDir, writable: stateOk },
     jobs: counts,
+    codex_copies: { ...codexCopies, policy: config.codexCopies ?? "keep" },
     settings: {
       max_concurrent: config.maxConcurrent,
       wait_seconds: Math.round(config.pollWaitMs / 1000),

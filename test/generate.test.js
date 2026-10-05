@@ -420,3 +420,23 @@ test("generateImage: an output_dir outside PIXMITH_ALLOWED_DIRS is refused befor
     config.allowedDirs = null;
   }
 });
+
+test("generateImage: PIXMITH_CODEX_COPIES=remove deletes Codex's copy once ours is saved", async () => {
+  process.env.FAKE_MODE = "ok";
+  await reset();
+  const kept = await generateImage({ prompt: "a fox" });
+  await fs.access(kept.codexHomeCopy); // the default keeps it
+
+  await reset();
+  config.codexCopies = "remove";
+  try {
+    const res = await generateImage({ prompt: "a fox" });
+    assert.equal(res.codexHomeCopy, null);
+    assert.equal(res.size, "1024x768", "our copy is intact");
+    await fs.access(res.path);
+    const session = path.join(codexHome, "generated_images", "0a0b0c0d-1111-2222-3333-444455556666");
+    await assert.rejects(fs.access(session), "the emptied session folder is gone too");
+  } finally {
+    config.codexCopies = "keep";
+  }
+});

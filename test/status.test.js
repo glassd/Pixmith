@@ -141,3 +141,18 @@ test("checkStatus: warnings for an API-key sign-in, an old Codex, and config pro
     await t.cleanup();
   }
 });
+
+test("checkStatus: Codex's duplicate copies are counted from the history", async () => {
+  const t = await setup();
+  try {
+    const copy = path.join(t.dir, "ig_1.png");
+    await fs.writeFile(copy, "12345");
+    const history = { entries: async () => [{ job_id: "a", path: "/x.png", codex_copy: copy }, { job_id: "b", path: "/y.png", codex_copy: path.join(t.dir, "gone.png") }] };
+    let r = await checkStatus({ config: t.config, runCommand: t.runCommand, history });
+    assert.deepEqual(r.codex_copies, { count: 1, bytes: 5, policy: "keep" });
+    r = await checkStatus({ config: { ...t.config, codexCopies: "remove" }, runCommand: t.runCommand });
+    assert.deepEqual(r.codex_copies, { count: 0, bytes: 0, policy: "remove" }, "no history, nothing counted");
+  } finally {
+    await t.cleanup();
+  }
+});

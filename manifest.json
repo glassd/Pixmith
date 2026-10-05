@@ -18,31 +18,63 @@
   "support": "https://github.com/glassd/Pixmith/issues",
   "icon": "assets/icon.png",
   "license": "MIT",
-  "keywords": ["image", "image-generation", "gpt-image", "codex", "chatgpt", "openai"],
+  "keywords": [
+    "image",
+    "image-generation",
+    "gpt-image",
+    "codex",
+    "chatgpt",
+    "openai"
+  ],
   "server": {
     "type": "node",
     "entry_point": "src/index.js",
     "mcp_config": {
       "command": "node",
-      "args": ["${__dirname}/src/index.js"],
+      "args": [
+        "${__dirname}/src/index.js"
+      ],
       "env": {
         "CODEX_BIN": "${user_config.codex_bin}",
         "PIXMITH_OUTPUT_DIR": "${user_config.output_dir}",
         "PIXMITH_ALLOWED_DIRS": "${user_config.allowed_dir}",
-        "PIXMITH_MAX_CONCURRENT": "${user_config.max_concurrent}"
+        "PIXMITH_MAX_CONCURRENT": "${user_config.max_concurrent}",
+        "PIXMITH_CODEX_COPIES": "${user_config.remove_codex_copies}"
       }
     }
   },
   "tools": [
-    { "name": "generate_image", "description": "Generate an image from a text prompt, optionally with reference images, a transparent background or several variants." },
-    { "name": "edit_image", "description": "Edit an existing image with a text instruction; the source is never modified." },
-    { "name": "get_image_result", "description": "Collect a generation that took longer than one call, or an earlier image by its job_id." },
-    { "name": "cancel_image", "description": "Stop a queued or running generation so it stops using plan quota." },
-    { "name": "list_images", "description": "List earlier images, newest first, with their prompts and paths." },
-    { "name": "pixmith_status", "description": "Check Codex, the sign-in, plan usage and the image folder, without making an image." }
+    {
+      "name": "generate_image",
+      "description": "Generate an image from a text prompt, optionally with reference images, a transparent background or several variants."
+    },
+    {
+      "name": "edit_image",
+      "description": "Edit an existing image with a text instruction; the source is never modified."
+    },
+    {
+      "name": "get_image_result",
+      "description": "Collect a generation that took longer than one call, or an earlier image by its job_id."
+    },
+    {
+      "name": "cancel_image",
+      "description": "Stop a queued or running generation so it stops using plan quota."
+    },
+    {
+      "name": "list_images",
+      "description": "List earlier images, newest first, with their prompts and paths."
+    },
+    {
+      "name": "pixmith_status",
+      "description": "Check Codex, the sign-in, plan usage and the image folder, without making an image."
+    }
   ],
   "compatibility": {
-    "platforms": ["darwin", "win32", "linux"],
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
     "runtimes": {
       "node": ">=18.0.0"
     }
@@ -73,6 +105,13 @@
       "default": 1,
       "min": 1,
       "max": 4,
+      "required": false
+    },
+    "remove_codex_copies": {
+      "type": "boolean",
+      "title": "Delete Codex's duplicate copies",
+      "description": "Codex keeps its own copy of every image. When on, Pixmith deletes it once its own copy is saved, halving the space each image takes. Leave off if you browse images in the Codex app.",
+      "default": false,
       "required": false
     }
   }

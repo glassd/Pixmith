@@ -293,6 +293,13 @@ export const config = {
   // mishandles structured tool results.
   structuredOutput: envBool("PIXMITH_STRUCTURED_OUTPUT", true),
 
+  // Codex keeps its own copy of every image under CODEX_HOME/generated_images.
+  // "remove" deletes it once Pixmith's copy is saved; "keep" (default) leaves
+  // Codex's folder alone, since the Codex app may show those files.
+  // A Claude Desktop bundle's checkbox sends "true"/"false", which mean remove/keep.
+  codexCopies: { true: "remove", false: "keep" }[readEnv("PIXMITH_CODEX_COPIES")?.toLowerCase()] ??
+    envChoice("PIXMITH_CODEX_COPIES", ["keep", "remove"], "keep"),
+
   // Write <image>.json beside every PNG: the prompt, sizes, source and
   // reference images, Codex session and a SHA-256 of the image.
   writeMetadata: envBool("PIXMITH_METADATA", true),

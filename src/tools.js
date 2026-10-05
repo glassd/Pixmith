@@ -13,6 +13,7 @@ import {
 } from "./codex.js";
 import { jobFromEntry } from "./history.js";
 import { makeInlineImage } from "./preview.js";
+import { formatBytes } from "./prune.js";
 import { checkStatus as checkSetup } from "./status.js";
 import { creditGate, readUsage as readCodexUsage, usageLines, usageSummary } from "./usage.js";
 
@@ -202,6 +203,16 @@ export const STATUS_OUTPUT_SCHEMA = {
     output_dir: { type: "object", properties: { path: { type: "string" }, writable: { type: "boolean" } }, required: ["path", "writable"] },
     state_dir: { type: "object", properties: { path: { type: "string" }, writable: { type: "boolean" } }, required: ["path", "writable"] },
     jobs: { type: "object", properties: { running: { type: "integer" }, queued: { type: "integer" } }, required: ["running", "queued"] },
+    codex_copies: {
+      type: "object",
+      description: "Codex's own duplicate copies of Pixmith's images, still under CODEX_HOME.",
+      properties: {
+        count: { type: "integer" },
+        bytes: { type: "integer" },
+        policy: { type: "string", enum: ["keep", "remove"], description: "PIXMITH_CODEX_COPIES." },
+      },
+      required: ["count", "bytes", "policy"],
+    },
     settings: { type: "object", description: "The settings in effect (from PIXMITH_* environment variables)." },
     problems: {
       type: "array",
@@ -854,6 +865,10 @@ export function createTools({
       if (!job && history) {
         const entry = await history.find(id);
         if (entry) job = jobFromEntry(entry);
+        // Codex's copy may have been pruned since.
+        if (job?.result.codexHomeCopy) {
+          job.result.codexHomeCopy = await fs.access(job.result.codexHomeCopy).then(() => job.result.codexHomeCopy, () => null);
+        }
       }
       if (!job) {
         throw new PixmithError(
@@ -970,6 +985,7 @@ export function createTools({
       config,
       configWarnings,
       jobs,
+      history,
       readUsage: async () => usage,
       ...(runCodexCommand ? { runCommand: runCodexCommand } : {}),
     });
@@ -1000,6 +1016,15 @@ export function createTools({
       `Output folder: ${r.output_dir.path} (${r.output_dir.writable ? "writable" : "NOT writable"})`,
       `Folders output_dir may use: ${r.settings.allowed_dirs ? r.settings.allowed_dirs.join(", ") : "any (PIXMITH_ALLOWED_DIRS is not set)"}`,
       `Jobs: ${r.jobs.running} running, ${r.jobs.queued} queued`,
+      ...(r.codex_copies.count
+        ? [
+            `Codex's duplicate copies: ${r.codex_copies.count} image${r.codex_copies.count === 1 ? "" : "s"}, ${formatBytes(r.codex_copies.bytes)} ` +
+              "under CODEX_HOME. Run `npx pixmith prune-codex-copies` (from a source checkout: `node src/index.js prune-codex-copies`) " +
+              (r.codex_copies.policy === "remove"
+                ? "to delete them; new images no longer keep one."
+                : "to delete them, or set PIXMITH_CODEX_COPIES=remove so new ones are not kept."),
+          ]
+        : []),
       `Settings: up to ${r.settings.max_concurrent} job${r.settings.max_concurrent === 1 ? "" : "s"} at a time, ` +
         `${r.settings.wait_seconds}s wait window, ${r.settings.timeout_seconds}s timeout, sandbox ${r.settings.sandbox}, ` +
         `credits policy "${r.settings.credits_policy}"` +

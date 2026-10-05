@@ -261,6 +261,33 @@ export function listGeneratedPngs(sessionId = null) {
 }
 
 /**
+ * Delete Codex's own copy of an image, then its session folder if that is now
+ * empty. Only a file inside CODEX_HOME/generated_images is ever touched (with
+ * symlinks resolved). Returns true when the file was deleted; with `dryRun`,
+ * whether it would be.
+ */
+export async function removeCodexCopy(file, { dryRun = false } = {}) {
+  let realRoot;
+  let realDir;
+  try {
+    realRoot = await fs.realpath(generatedImagesRoot());
+    realDir = await fs.realpath(path.dirname(file));
+  } catch {
+    return false;
+  }
+  const rel = path.relative(realRoot, path.join(realDir, path.basename(file)));
+  if (!rel || rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) return false;
+  if (dryRun) return fssync.existsSync(file);
+  try {
+    await fs.unlink(file);
+  } catch {
+    return false;
+  }
+  if (realDir !== realRoot) await fs.rmdir(realDir).catch(() => {}); // fails, harmlessly, unless empty
+  return true;
+}
+
+/**
  * The names directly under CODEX_HOME/generated_images. A cheap pre-run
  * snapshot: Codex gives every session a folder of its own there, so a run's
  * output is whatever appears under a name that was not present before.
@@ -1006,6 +1033,12 @@ export async function generateImage({
           duration_ms: Date.now() - startedAt,
         });
       }
+      // PIXMITH_CODEX_COPIES=remove: our copy is written and checked, so Codex's
+      // duplicate under CODEX_HOME can go (Codex has exited by now).
+      let codexHomeCopy = sourcePng ? path.resolve(sourcePng) : null;
+      if (codexHomeCopy && finalPath === ownCopy && config.codexCopies === "remove" && (await removeCodexCopy(codexHomeCopy))) {
+        codexHomeCopy = null;
+      }
       return {
         path: path.resolve(finalPath),
         size,
@@ -1014,7 +1047,7 @@ export async function generateImage({
         width: dims?.width ?? null,
         height: dims?.height ?? null,
         bytes: st.size,
-        codexHomeCopy: sourcePng ? path.resolve(sourcePng) : null,
+        codexHomeCopy,
         sessionId,
         mode,
         inputImages,
