@@ -48,7 +48,8 @@ test("skills: portable frontmatter with a name matching the folder and a descrip
   const dirs = await fs.readdir(path.join(ROOT, "skills"));
   assert.ok(dirs.length >= 2);
   for (const dir of dirs) {
-    const text = await fs.readFile(path.join(ROOT, "skills", dir, "SKILL.md"), "utf8");
+    // Windows checkouts may convert line endings to CRLF; Claude Code reads either.
+    const text = (await fs.readFile(path.join(ROOT, "skills", dir, "SKILL.md"), "utf8")).replace(/\r\n/g, "\n");
     const m = text.match(/^---\n([\s\S]*?)\n---\n/);
     assert.ok(m, `${dir}: frontmatter must open on line 1`);
     const fields = Object.fromEntries(
