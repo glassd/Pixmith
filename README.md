@@ -142,7 +142,7 @@ the stale setting.
 
 ## Install
 
-All three ways need the Codex CLI or the Codex desktop app, signed in with your ChatGPT
+Every route needs the Codex CLI or the Codex desktop app, signed in with your ChatGPT
 account (see [prerequisites](#prerequisites)).
 
 ### Claude Desktop: one-click bundle
@@ -163,6 +163,29 @@ settings, all optional:
 To build the bundle yourself: `npm run bundle` writes `dist/pixmith.mcpb` (it installs
 only the runtime dependencies into a temporary folder, so dev tools never end up in it).
 
+### Claude Code: plugin
+
+In Claude Code, run:
+
+```text
+/plugin marketplace add glassd/Pixmith
+/plugin install pixmith@pixmith
+```
+
+On Claude Code 2.1.275 or later this works in one step:
+
+```text
+/plugin install pixmith --marketplace glassd/Pixmith
+```
+
+The plugin bundles the MCP server and the two [skills](#skills). Claude Code installs
+the npm dependencies itself, so you only need Node.js and a signed-in Codex. Images are
+saved to `~/Pictures/Pixmith` unless you set `PIXMITH_OUTPUT_DIR` in your environment.
+Pixmith's timing history lives in the plugin's data folder, so it survives updates.
+
+If you registered Pixmith by hand before, remove that entry (`claude mcp remove pixmith`)
+so you don't run two copies.
+
 ### Any MCP client: npm
 
 Run it with `npx`; no clone needed. In Claude Desktop's `claude_desktop_config.json`
@@ -176,7 +199,7 @@ Run it with `npx`; no clone needed. In Claude Desktop's `claude_desktop_config.j
 }
 ```
 
-In Claude Code: `claude mcp add pixmith --scope user -- npx -y pixmith`.
+In Claude Code, prefer [the plugin](#claude-code-plugin), which adds the skills too; for the server alone: `claude mcp add pixmith --scope user -- npx -y pixmith`.
 
 ### From source
 
@@ -194,8 +217,9 @@ own state in `.pixmith/` inside the project, as before. Installed as a bundle or
 npm, the code sits in a folder you never open, so images go to `Pictures/Pixmith` in
 your home folder (or `~/Pixmith` without a Pictures folder), and state to
 `~/Library/Application Support/Pixmith` (macOS), `%LOCALAPPDATA%\Pixmith` (Windows) or
-`~/.local/state/pixmith` (Linux). `PIXMITH_OUTPUT_DIR` and `PIXMITH_STATE_DIR` override
-both.
+`~/.local/state/pixmith` (Linux). As a Claude Code plugin, images go to
+`~/Pictures/Pixmith` and state to the plugin's data folder. `PIXMITH_OUTPUT_DIR` and
+`PIXMITH_STATE_DIR` override all of these.
 
 ## Run / smoke test
 
@@ -519,6 +543,36 @@ when it differs.
 
 ---
 
+## Skills
+
+Pixmith passes your assistant's prompt to gpt-image-2 word for word, so the result is
+only as good as the prompt. Two skills teach Claude to make the most of that:
+
+- **`image-prompts`** — how to write a strong gpt-image-2 prompt (use, subject, style,
+  composition, light, exact text), choose a size, use reference images, and refine a
+  result with targeted edits. Claude loads it whenever it is about to make or edit an
+  image.
+- **`project-images`** — images for a codebase at exact specs: favicons, app icons, Open
+  Graph cards, README banners, hero images. It generates at a size the model accepts,
+  then uses a bundled script to crop and resize to exact pixels, build multi-size
+  `favicon.ico` files and transparent cutouts, and wires the files into the HTML,
+  framework metadata, web manifest or README.
+
+The plugin install includes both. For a manual install in Claude Code, link them into
+your personal skills folder so the bundled script can still find Pixmith's dependencies:
+
+```bash
+mkdir -p ~/.claude/skills
+ln -s /path/to/Pixmith/skills/image-prompts ~/.claude/skills/image-prompts
+ln -s /path/to/Pixmith/skills/project-images ~/.claude/skills/project-images
+```
+
+Claude Desktop and claude.ai accept uploaded skills too: zip the `image-prompts` folder
+and add it under Skills in Claude's settings. `project-images` relies on running its
+script locally, so it is meant for Claude Code.
+
+---
+
 ## Environment variables
 
 | Variable                   | Default                                              | Purpose                                                          |
@@ -534,8 +588,8 @@ when it differs.
 | `PIXMITH_SHOW_USAGE`       | `true`                                               | Add the plan usage line (and near-limit warning) to results.    |
 | `PIXMITH_USAGE_WARN_PERCENT` | `80`                                               | Warn once any plan window is this full.                          |
 | `PIXMITH_USE_CREDITS`      | `ask`                                                | When the plan limit is used up: `ask` (require `use_credits: true`), `always` (run on credits without asking), or `never` (refuse). |
-| `PIXMITH_STATE_DIR`        | `<project>/.pixmith` (installed: per-user app folder, see [where files go](#from-source)) | Where Pixmith keeps its own state: recent job durations (used for time estimates) and the image history behind `list_images`. |
-| `PIXMITH_OUTPUT_DIR`       | `<project>/images` (installed: `~/Pictures/Pixmith`)  | Default output directory for generated PNGs.                    |
+| `PIXMITH_STATE_DIR`        | `<project>/.pixmith` (installed: per-user app folder; plugin: its data folder; see [where files go](#from-source)) | Where Pixmith keeps its own state: recent job durations (used for time estimates) and the image history behind `list_images`. |
+| `PIXMITH_OUTPUT_DIR`       | `<project>/images` (installed: `~/Pictures/Pixmith`)  | Default output directory for generated PNGs. A leading `~` means your home folder. The Claude Code plugin sets its default through `PIXMITH_DEFAULT_OUTPUT_DIR`, so your own `PIXMITH_OUTPUT_DIR` still takes priority. |
 | `PIXMITH_ALLOWED_DIRS`     | *(unset: any folder)*                                | Folders `output_dir` may point into, separated like `PATH` (`:` on macOS/Linux, `;` on Windows), e.g. `/Users/you/Pictures:/Users/you/projects`. The default output folder is always allowed. See [security notes](#security-notes). |
 | `CODEX_HOME`               | `~/.codex`                                            | Codex home (used to locate the backup `generated_images/` copy). |
 | `PIXMITH_TIMEOUT_MS`       | `300000` (5 min)                                     | Hard timeout per generation.                                    |
@@ -599,6 +653,9 @@ Then **quit and reopen** the app. Pixmith appears as a connector exposing the
 `pixmith_status` tools.
 
 ### Claude Code (CLI)
+
+The [plugin](#claude-code-plugin) is the easiest route. To register a
+source checkout by hand instead:
 
 ```bash
 claude mcp add pixmith --scope user -- node /path/to/Pixmith/src/index.js
