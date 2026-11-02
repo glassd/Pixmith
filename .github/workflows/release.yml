@@ -26,13 +26,14 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
 
-      - name: Tag matches package.json and manifest.json
+      - name: Tag matches package.json, manifest.json and the plugin manifest
         run: |
           tag="${GITHUB_REF_NAME#v}"
           pkg="$(node -p "require('./package.json').version")"
           man="$(node -p "require('./manifest.json').version")"
-          echo "tag=$tag package.json=$pkg manifest.json=$man"
-          test "$tag" = "$pkg" && test "$tag" = "$man"
+          plug="$(node -p "require('./.claude-plugin/plugin.json').version")"
+          echo "tag=$tag package.json=$pkg manifest.json=$man plugin.json=$plug"
+          test "$tag" = "$pkg" && test "$tag" = "$man" && test "$tag" = "$plug"
 
       - run: npm ci
       - run: npm test
@@ -41,11 +42,17 @@ jobs:
       # Stages production dependencies only, packs, then checks the bundle.
       - run: npm run bundle
       - run: mv dist/pixmith.mcpb "dist/pixmith-${GITHUB_REF_NAME#v}.mcpb"
+      # Skills as uploadable zips (a folder holding SKILL.md) for Claude Desktop and claude.ai.
+      - name: Skill zips
+        run: |
+          cd skills
+          for s in */; do s="${s%/}"; zip -qr "../dist/pixmith-${s}-skill.zip" "$s"; done
+          ls -l ../dist
 
-      - name: GitHub Release with the bundle
+      - name: GitHub Release with the bundle and skills
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/pixmith-*.mcpb --title "Pixmith ${GITHUB_REF_NAME}" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" dist/pixmith-*.mcpb dist/pixmith-*-skill.zip --title "Pixmith ${GITHUB_REF_NAME}" --generate-notes
 
       - name: Publish to npm
         if: env.NPM_TOKEN != ''
