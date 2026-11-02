@@ -642,7 +642,7 @@ test("pixmith_status: points out Codex's duplicate copies and how to delete them
     assert.deepEqual(res.structuredContent.codex_copies, { count: 1, bytes: 5, policy: "keep" });
     assert.match(
       res.content[0].text,
-      /^Codex's duplicate copies: 1 image, 5 bytes under CODEX_HOME\. Run `npx pixmith prune-codex-copies` .* or set PIXMITH_CODEX_COPIES=remove so new ones are not kept\.$/m,
+      /^Codex's duplicate copies: 1 image, 5 bytes under CODEX_HOME\. Run `npx pixmith prune-codex-copies --state-dir .*` .* or set PIXMITH_CODEX_COPIES=remove so new ones are not kept\.$/m,
     );
   } finally {
     await t.close();

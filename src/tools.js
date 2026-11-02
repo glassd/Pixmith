@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { normalizeSize } from "./config.js";
@@ -1187,7 +1188,8 @@ export function createTools({
       ...(r.codex_copies.count
         ? [
             `Codex's duplicate copies: ${r.codex_copies.count} image${r.codex_copies.count === 1 ? "" : "s"}, ${formatBytes(r.codex_copies.bytes)} ` +
-              "under CODEX_HOME. Run `npx pixmith prune-codex-copies` (from a source checkout: `node src/index.js prune-codex-copies`) " +
+              `under CODEX_HOME. Run \`npx pixmith prune-codex-copies ${pruneFlags(config)}\` ` +
+              `(from a source checkout: \`node src/index.js prune-codex-copies ${pruneFlags(config)}\`) ` +
               (r.codex_copies.policy === "remove"
                 ? "to delete them; new images no longer keep one."
                 : "to delete them, or set PIXMITH_CODEX_COPIES=remove so new ones are not kept."),
@@ -1222,6 +1224,19 @@ export function createTools({
   }
 
   return { tools: [GENERATE_TOOL, EDIT_TOOL, RESULT_TOOL, CANCEL_TOOL, LIST_TOOL, STATUS_TOOL], call };
+}
+
+/**
+ * Options that point a terminal run of `prune-codex-copies` at this server's
+ * own history and Codex folder. Without them a plugin or bundle install, whose
+ * state lives in a folder the terminal can't guess, would find nothing to do.
+ */
+export function pruneFlags(config, defaultCodexHome = path.join(os.homedir(), ".codex")) {
+  const quote = (p) => (/[\s"'`$&|;<>()]/.test(p) ? `"${p}"` : p);
+  const flags = [`--state-dir ${quote(config.stateDir)}`];
+  if (path.resolve(config.codexHome) !== path.resolve(defaultCodexHome))
+    flags.push(`--codex-home ${quote(config.codexHome)}`);
+  return flags.join(" ");
 }
 
 function text(lines) {

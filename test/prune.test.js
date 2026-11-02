@@ -147,3 +147,37 @@ test("prune and stats never treat an image's only copy as a duplicate", async ()
   assert.deepEqual(result.kept, [{ path: only, reason: "it is the only copy of the image" }]);
   assert.ok(await exists(only), "the image survives");
 });
+
+test("pixmith prune-codex-copies --state-dir / --codex-home read another server's history and Codex folder", async () => {
+  // A plugin server keeps its history in its own data folder; a terminal run
+  // finds it only through --state-dir.
+  const otherHome = path.join(root, "other-codex-home");
+  const otherState = path.join(root, "other state");
+  const own = path.join(root, "images", "other.png");
+  const copy = path.join(otherHome, "generated_images", "s1", "ig_1.png");
+  await fs.mkdir(path.dirname(copy), { recursive: true });
+  await fs.mkdir(otherState, { recursive: true });
+  await fs.writeFile(own, "png-other");
+  await fs.writeFile(copy, "png-other");
+  await fs.writeFile(
+    path.join(otherState, "history.jsonl"),
+    `${JSON.stringify({ job_id: "o", path: own, codex_copy: copy })}\n`,
+  );
+
+  const lines = [];
+  const opts = { out: (s) => lines.push(s), err: (s) => lines.push(s) };
+  const { config } = await import("../src/config.js");
+  const before = config.codexHome;
+  try {
+    const code = await runCli(
+      ["prune-codex-copies", "--dry-run", "--state-dir", otherState, `--codex-home=${otherHome}`],
+      opts,
+    );
+    assert.equal(code, 0);
+    assert.match(lines.join("\n"), /^Would remove 1 of Codex's duplicate image copy/);
+    assert.ok(lines.join("\n").includes(copy));
+  } finally {
+    config.codexHome = before;
+  }
+  assert.equal(await runCli(["prune-codex-copies", "--state-dir"], opts), 1, "a missing folder is an error");
+});

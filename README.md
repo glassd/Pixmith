@@ -483,9 +483,11 @@ space. `pixmith_status` shows how much that is. Two ways to reclaim it:
 - **New images:** set `PIXMITH_CODEX_COPIES=remove`, and Pixmith deletes Codex's copy
   (and its emptied session folder) as soon as its own copy is saved. The default is
   `keep`, because those files belong to Codex and the Codex app may show them.
-- **Existing images:** run `npx pixmith prune-codex-copies` (from a source checkout:
+- **Existing images:** run the command `pixmith_status` prints, e.g.
+  `npx pixmith prune-codex-copies --state-dir <folder>` (from a source checkout:
   `node src/index.js prune-codex-copies`); add `--dry-run` to see what it would delete
-  first. It works from the [image history](#list_images--find-earlier-images) and deletes
+  first. `--state-dir` points it at the server's own image history, which matters for
+  the plugin and the Desktop bundle, and `--codex-home` covers a non-default `CODEX_HOME`. It works from the [image history](#list_images--find-earlier-images) and deletes
   a Codex copy only when Pixmith's copy still exists with exactly the same bytes, and only
   inside `generated_images` (a symlink cannot lead it anywhere else).
 

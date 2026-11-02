@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { PixmithError } from "../src/codex.js";
 import { JobManager } from "../src/jobs.js";
-import { RECENT_JOB_MS, createTools, formatError } from "../src/tools.js";
+import { RECENT_JOB_MS, createTools, formatError, pruneFlags } from "../src/tools.js";
 import { noisyPng } from "../fixtures/noisy-png.js";
 
 const PNG = Buffer.concat([
@@ -528,4 +528,13 @@ test("inline image: a file that cannot be previewed degrades to a note, never an
   } finally {
     await t.cleanup();
   }
+});
+
+test("pruneFlags: names the server's state folder, quotes spaces, and adds a non-default Codex home", () => {
+  const home = path.join(os.homedir(), ".codex");
+  assert.equal(pruneFlags({ stateDir: "/data/state", codexHome: home }, home), "--state-dir /data/state");
+  assert.equal(
+    pruneFlags({ stateDir: "/Users/me/Library/Application Support/Pixmith", codexHome: "/opt/codex" }, home),
+    '--state-dir "/Users/me/Library/Application Support/Pixmith" --codex-home /opt/codex',
+  );
 });
