@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { PixmithError } from "../src/codex.js";
 import { JobManager } from "../src/jobs.js";
-import { createTools, formatError } from "../src/tools.js";
+import { RECENT_JOB_MS, createTools, formatError } from "../src/tools.js";
 import { noisyPng } from "../fixtures/noisy-png.js";
 
 const PNG = Buffer.concat([
@@ -200,6 +200,98 @@ test("cancel_image: stops the latest active job; later reads report cancelled", 
     assert.match(textOf(after), /status: cancelled/);
     assert.equal(after.isError, undefined);
     assert.match(textOf(await t.call("cancel_image", { job_id: jobIdOf(started) })), /Nothing to cancel/);
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test("job_id fallback: with one job in flight, get_image_result and cancel_image find it without a job_id", async () => {
+  const t = await setup({ pollWaitMs: 2000 });
+  try {
+    // An earlier image, already returned to its caller, is not a candidate.
+    const pending = t.call("generate_image", { prompt: "a red fox" });
+    (await startedCall(t)).resolve(t.result());
+    const fox = await pending;
+    assert.match(textOf(fox), /status: done/);
+
+    const whale = await t.call("generate_image", { prompt: "a blue whale", wait: false });
+    t.calls[1].resolve(t.result());
+    const got = await t.call("get_image_result", {});
+    assert.match(textOf(got), /status: done/);
+    assert.equal(jobIdOf(got), jobIdOf(whale));
+    assert.match(textOf(got), /No job_id given: picked the only candidate, the job for "a blue whale"/);
+
+    const owl = await t.call("generate_image", { prompt: "an owl", wait: false });
+    const cancelled = await t.call("cancel_image", {});
+    assert.match(textOf(cancelled), /status: cancelled/);
+    assert.equal(jobIdOf(cancelled), jobIdOf(owl));
+    assert.match(textOf(cancelled), /the job for "an owl"/);
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test("job_id fallback: with two jobs in flight it refuses and lists them", async () => {
+  const t = await setup({ pollWaitMs: 30 });
+  try {
+    const a = await t.call("generate_image", {
+      prompt: "a red fox in the snow at dawn with mountains behind",
+      wait: false,
+    });
+    const b = await t.call("generate_image", { prompt: "a blue whale", wait: false });
+
+    const res = await t.call("get_image_result", {});
+    assert.equal(res.isError, true);
+    const out = textOf(res);
+    assert.match(out, /^\[ambiguous_job\] No job_id given, and 2 jobs could be meant .* none was picked\./);
+    assert.ok(out.includes(`- ${jobIdOf(b)}: queued, started 0s ago — "a blue whale"`), out);
+    assert.ok(out.includes(`- ${jobIdOf(a)}: running, started 0s ago — "a red fox in the snow at dawn…"`), out);
+    assert.match(out, /Next step: Pass the job_id from the generate_image \/ edit_image result/);
+    assert.equal(res.structuredContent.error.kind, "ambiguous_job");
+    assert.deepEqual(
+      res.structuredContent.candidates.map((c) => [c.job_id, c.status, c.prompt]),
+      [
+        [jobIdOf(b), "queued", "a blue whale"],
+        [jobIdOf(a), "running", "a red fox in the snow at dawn…"],
+      ],
+    );
+
+    const cancel = await t.call("cancel_image", {});
+    assert.equal(cancel.isError, true);
+    assert.match(textOf(cancel), /\[ambiguous_job\] .* so nothing was cancelled\. Call cancel_image again/);
+    assert.equal(t.calls[0].args.signal.aborted, false, "nothing was cancelled");
+
+    // A finished result nobody has collected yet is still a candidate.
+    t.calls[0].resolve(t.result());
+    assert.match(textOf(await t.call("get_image_result", {})), /\[ambiguous_job\] .* 2 jobs could be meant/);
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test("job_id fallback: an explicit job_id always works", async () => {
+  const t = await setup({ pollWaitMs: 30 });
+  try {
+    const a = await t.call("generate_image", { prompt: "a red fox", wait: false });
+    const b = await t.call("generate_image", { prompt: "a blue whale", wait: false });
+
+    const queued = await t.call("cancel_image", { job_id: jobIdOf(b) });
+    assert.match(textOf(queued), /status: cancelled/);
+    assert.match(textOf(queued), /removed from the queue/);
+    assert.doesNotMatch(textOf(queued), /No job_id given/);
+
+    t.calls[0].resolve(t.result());
+    const got = await t.call("get_image_result", { job_id: jobIdOf(a) });
+    assert.match(textOf(got), /status: done/);
+    assert.doesNotMatch(textOf(got), /No job_id given/);
+
+    // Once nothing is recent, only an explicit job_id finds a job.
+    for (const job of t.jobs.all()) job.finishedAt -= RECENT_JOB_MS + 1000;
+    assert.match(
+      textOf(await t.call("get_image_result", {})),
+      /\[unknown_job\] No job_id given, and no job is in progress or finished in the last 10 minutes/,
+    );
+    assert.match(textOf(await t.call("get_image_result", { job_id: jobIdOf(a) })), /status: done/);
   } finally {
     await t.cleanup();
   }

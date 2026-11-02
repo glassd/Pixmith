@@ -135,10 +135,9 @@ export class JobManager {
     return this.jobs.get(id) ?? null;
   }
 
-  /** The most recently created job, optionally only one that is still queued/running. */
-  latest({ activeOnly = false } = {}) {
-    const all = [...this.jobs.values()].reverse();
-    return all.find((j) => !activeOnly || ACTIVE.has(j.status)) ?? null;
+  /** Every job still held in memory, newest first. */
+  all() {
+    return [...this.jobs.values()].reverse();
   }
 
   isActive(job) {

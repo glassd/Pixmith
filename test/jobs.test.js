@@ -61,8 +61,10 @@ test("JobManager: runs FIFO up to maxConcurrent and records durations", async ()
   assert.equal(b.status, "queued");
   assert.equal(jobs.queuePosition(b.id), 1);
   assert.equal(calls.length, 1);
-  assert.equal(jobs.latest().id, b.id);
-  assert.equal(jobs.latest({ activeOnly: true }).id, b.id);
+  assert.deepEqual(
+    jobs.all().map((j) => j.id),
+    [b.id, a.id],
+  );
 
   calls[0].args.onStage("rendering");
   assert.equal(a.stage, "rendering");
