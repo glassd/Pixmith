@@ -186,6 +186,22 @@ Pixmith's timing history lives in the plugin's data folder, so it survives updat
 If you registered Pixmith by hand before, remove that entry (`claude mcp remove pixmith`)
 so you don't run two copies.
 
+### Any MCP client: npm
+
+Run it with `npx`; no clone needed. In Claude Desktop's `claude_desktop_config.json`
+(or any client's `mcpServers` block):
+
+```json
+{
+  "mcpServers": {
+    "pixmith": { "command": "npx", "args": ["-y", "pixmith"] }
+  }
+}
+```
+
+In Claude Code, prefer [the plugin](#claude-code-plugin), which adds the skills too; for
+the server alone: `claude mcp add pixmith --scope user -- npx -y pixmith`.
+
 ### From source
 
 ```bash
@@ -195,11 +211,11 @@ npm install
 ```
 
 then [register it](#register-pixmith-as-a-connector-in-your-mcp-client) with the path
-to `src/index.js`. This is also the route for MCP clients other than Claude.
+to `src/index.js`.
 
 **Where files go.** Run from a git checkout, Pixmith keeps images in `images/` and its
-own state in `.pixmith/` inside the project, as before. Installed as a bundle, the code
-sits in a folder you never open, so images go to `Pictures/Pixmith` in
+own state in `.pixmith/` inside the project, as before. Installed as a bundle or from
+npm, the code sits in a folder you never open, so images go to `Pictures/Pixmith` in
 your home folder (or `~/Pixmith` without a Pictures folder), and state to
 `~/Library/Application Support/Pixmith` (macOS), `%LOCALAPPDATA%\Pixmith` (Windows) or
 `~/.local/state/pixmith` (Linux). As a Claude Code plugin, images go to
@@ -467,8 +483,8 @@ space. `pixmith_status` shows how much that is. Two ways to reclaim it:
 - **New images:** set `PIXMITH_CODEX_COPIES=remove`, and Pixmith deletes Codex's copy
   (and its emptied session folder) as soon as its own copy is saved. The default is
   `keep`, because those files belong to Codex and the Codex app may show them.
-- **Existing images:** from a source checkout, run `node src/index.js prune-codex-copies`;
-  add `--dry-run` to see what it would delete
+- **Existing images:** run `npx pixmith prune-codex-copies` (from a source checkout:
+  `node src/index.js prune-codex-copies`); add `--dry-run` to see what it would delete
   first. It works from the [image history](#list_images--find-earlier-images) and deletes
   a Codex copy only when Pixmith's copy still exists with exactly the same bytes, and only
   inside `generated_images` (a symlink cannot lead it anywhere else).
@@ -603,8 +619,9 @@ See [`.env.example`](.env.example) for a copy-paste starting point.
 
 ## Register Pixmith as a connector in your MCP client
 
-For a [source install](#from-source). (The bundle and the plugin register themselves.)
-Pixmith does **not** register itself from source: replace
+For a [source install](#from-source). (The bundle and the plugin register themselves,
+and the npm route only needs the `npx` entry above.) Pixmith does **not** register
+itself from source: replace
 `/path/to/Pixmith` below with the absolute path where you cloned this repo.
 
 ### Claude Desktop
@@ -731,13 +748,14 @@ plan usage and the output folder, and says what to do about each problem it find
    `.claude-plugin/plugin.json` (the tests fail if they differ). Plugin users only receive
    an update when this version changes.
 2. Merge to `main`, then push a matching tag: `git tag v0.6.0 && git push origin v0.6.0`.
-3. The release workflow checks the versions, runs the tests, and creates a GitHub Release
+3. The release workflow checks the versions, runs the tests, creates a GitHub Release
    with the Claude Desktop bundle (`pixmith-<version>.mcpb`) and the two skills as zip
-   files.
+   files, and publishes to npm.
 
-Pixmith is not on npm yet. Publishing needs an npm account: add an automation token as
-the `NPM_TOKEN` repository secret and the next release also runs `npm publish`. Restore
-an `npx` install section in this README once the package exists.
+npm publishing uses [trusted publishing](https://docs.npmjs.com/trusted-publishers): on
+npmjs.com, the `pixmith` package's Trusted Publisher settings name GitHub Actions,
+`glassd` / `Pixmith` and the workflow file `release.yml`, with `npm publish` allowed. No
+npm token is stored in the repository.
 
 ---
 
