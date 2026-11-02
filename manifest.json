@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "pixmith",
   "display_name": "Pixmith",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Generate and edit images with gpt-image-2 through the OpenAI Codex CLI, on your ChatGPT subscription. No API key.",
   "long_description": "Pixmith lets Claude make and edit images by driving the OpenAI Codex CLI, which renders them with gpt-image-2 on your signed-in ChatGPT plan. Images are saved as PNGs and shown inline. It needs the Codex CLI or the Codex desktop app, signed in with your ChatGPT account. Each image counts toward your plan's Codex usage; Pixmith reports what is left and asks before anything would run on paid credits.",
   "author": {

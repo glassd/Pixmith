@@ -1,0 +1,12 @@
+{
+  "name": "pixmith",
+  "description": "Pixmith: image generation on your ChatGPT subscription via the Codex CLI.",
+  "owner": { "name": "glassd", "url": "https://github.com/glassd" },
+  "plugins": [
+    {
+      "name": "pixmith",
+      "source": ".",
+      "description": "Generate and edit images on your ChatGPT subscription via the Codex CLI, with skills for prompting and project assets."
+    }
+  ]
+}

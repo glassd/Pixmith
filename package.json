@@ -1,6 +1,6 @@
 {
   "name": "pixmith",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Local MCP server that generates and edits images by driving the OpenAI Codex CLI on your ChatGPT subscription (no API key).",
   "keywords": [
     "mcp",

@@ -117,6 +117,29 @@ export function defaultDirs({
 
 const DEFAULT_DIRS = defaultDirs();
 
+/** Expand a leading "~" (alone, or followed by a slash or backslash) to the home directory. */
+export function expandHome(p, home = HOME) {
+  if (p === "~") return home;
+  if (p.startsWith("~/") || p.startsWith("~\\")) return path.join(home, p.slice(2));
+  return p;
+}
+
+/**
+ * A directory setting. Supports a leading "~" (so a plugin manifest can say
+ * "~/Pictures/Pixmith" on every OS) and resolves relative paths against the
+ * project root. A value that still contains "${" was never substituted by the
+ * MCP client, so it is ignored with a startup warning rather than creating a
+ * folder literally named "${CLAUDE_PLUGIN_DATA}".
+ */
+function envPath(name, fallback) {
+  const v = envStr(name, null);
+  if (v && v.includes("${")) {
+    configWarnings.push(`${name}="${v}" contains an unexpanded variable and was ignored; using "${fallback}".`);
+    return path.resolve(PROJECT_ROOT, fallback);
+  }
+  return path.resolve(PROJECT_ROOT, expandHome(v ?? fallback));
+}
+
 /** Read the version from package.json so the server never drifts from it. */
 function readPackageVersion() {
   try {
@@ -218,7 +241,10 @@ export const config = {
 
   // Where images land by default when the caller does not pass output_dir.
   // Resolved against the project root so a relative override still works.
-  defaultOutputDir: path.resolve(PROJECT_ROOT, envStr("PIXMITH_OUTPUT_DIR", DEFAULT_DIRS.images)),
+  // PIXMITH_DEFAULT_OUTPUT_DIR is what an installer (the Claude Code plugin)
+  // sets; the user's own PIXMITH_OUTPUT_DIR, inherited from their environment,
+  // always wins over it. A leading "~" means the home folder.
+  defaultOutputDir: envPath("PIXMITH_OUTPUT_DIR", envPath("PIXMITH_DEFAULT_OUTPUT_DIR", DEFAULT_DIRS.images)),
 
   // Folders output_dir may point into (see parseAllowedDirs); null = any.
   // defaultOutputDir is always allowed.
@@ -240,7 +266,7 @@ export const config = {
   codexEffort: envPattern("PIXMITH_CODEX_EFFORT", /^[a-z]+$/),
 
   // CODEX_HOME holds generated_images/<session>/ig_*.png and sessions/**.jsonl.
-  codexHome: envStr("CODEX_HOME", path.join(HOME, ".codex")),
+  codexHome: envPath("CODEX_HOME", path.join(HOME, ".codex")),
 
   // Hard timeout for a single generation, in milliseconds.
   timeoutMs: envInt("PIXMITH_TIMEOUT_MS", 5 * 60 * 1000),
@@ -275,7 +301,7 @@ export const config = {
 
   // Where Pixmith keeps its own small state (recent job durations, used to
   // estimate how long a generation will take). Git-ignored.
-  stateDir: path.resolve(PROJECT_ROOT, envStr("PIXMITH_STATE_DIR", DEFAULT_DIRS.state)),
+  stateDir: envPath("PIXMITH_STATE_DIR", DEFAULT_DIRS.state),
 
   // Whether to return the image inline as MCP image content (base64), and the
   // byte budget for it. Clients cap tool results — Claude Desktop rejects more
