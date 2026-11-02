@@ -1076,6 +1076,20 @@ export function createTools({
         previous_status: was,
       });
     }
+    // Codex may already have finished and the image be in its last save step,
+    // which a cancel no longer interrupts: report what actually happened.
+    if (job.status === "done" || job.status === "error") {
+      const note =
+        job.status === "done"
+          ? "The image was already being saved when the cancel arrived, so the job finished. Call get_image_result to fetch it."
+          : "The job ended with an error before the cancel took effect.";
+      return withData(text([`status: ${job.status}`, `job_id: ${job.id}`, "", note, ...picked]), {
+        status: job.status,
+        job_id: job.id,
+        cancel_requested: true,
+        previous_status: was,
+      });
+    }
     const elapsed = secs(jobs.elapsedMs(job));
     const note =
       was === "queued"

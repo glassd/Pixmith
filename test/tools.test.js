@@ -538,3 +538,21 @@ test("pruneFlags: names the server's state folder, quotes spaces, and adds a non
     '--state-dir "/Users/me/Library/Application Support/Pixmith" --codex-home /opt/codex',
   );
 });
+
+test("cancel_image: a job that finishes while the cancel lands is reported as done, not cancelled", async () => {
+  // The last save step ignores a cancel: generation resolves with its image.
+  let finish;
+  const generate = (args) => new Promise((resolve) => args.signal.addEventListener("abort", () => resolve(finish())));
+  const t = await setup({ pollWaitMs: 30, generate });
+  finish = () => t.result();
+  try {
+    const started = await t.call("generate_image", { prompt: "a fox", wait: false });
+    const res = await t.call("cancel_image", { job_id: jobIdOf(started) });
+    assert.match(textOf(res), /^status: done/);
+    assert.match(textOf(res), /already being saved when the cancel arrived/);
+    assert.equal(res.structuredContent.status, "done");
+    assert.match(textOf(await t.call("get_image_result", { job_id: jobIdOf(started) })), /status: done/);
+  } finally {
+    await t.cleanup();
+  }
+});
