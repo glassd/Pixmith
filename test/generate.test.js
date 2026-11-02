@@ -501,3 +501,30 @@ test(
     }
   },
 );
+
+test(
+  "generateImage: a cancel also stops what Codex started, as with npm's launcher",
+  { skip: isWindows ? "Windows uses taskkill /T" : false, timeout: 20_000 },
+  async () => {
+    process.env.FAKE_MODE = "launcher";
+    await reset();
+    const pidFile = path.join(codexHome, "grandchild.pid");
+    await fs.rm(pidFile, { force: true });
+    const ac = new AbortController();
+    const onStage = (s) => s === "session_started" && setTimeout(() => ac.abort(), 300);
+    await assert.rejects(generateImage({ prompt: "a fox", signal: ac.signal, onStage }), (e) => e.kind === "cancelled");
+    const pid = Number(await fs.readFile(pidFile, "utf8"));
+    const alive = () => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    for (let i = 0; i < 20 && alive(); i += 1) await new Promise((r) => setTimeout(r, 50));
+    const stillAlive = alive();
+    if (stillAlive) process.kill(pid, "SIGKILL");
+    assert.equal(stillAlive, false, "the launcher's child must be stopped too");
+  },
+);

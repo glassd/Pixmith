@@ -1202,8 +1202,26 @@ function killTree(child) {
       /* fall through */
     }
   }
+  signalGroup(child, "SIGKILL");
+}
+
+/**
+ * Signal Codex and everything it started (macOS/Linux). Codex is spawned as the
+ * leader of its own process group, so a negative pid also reaches the real
+ * program behind an npm-installed launcher, which cannot forward SIGKILL and
+ * would otherwise keep running (and keep the job open) after a cancel.
+ */
+function signalGroup(child, sig) {
+  if (child.pid) {
+    try {
+      process.kill(-child.pid, sig);
+      return;
+    } catch {
+      /* not a group leader, or already gone: fall back to the process itself */
+    }
+  }
   try {
-    child.kill("SIGKILL");
+    child.kill(sig);
   } catch {
     /* already gone */
   }
@@ -1215,11 +1233,7 @@ function stopGently(child) {
     killTree(child);
     return;
   }
-  try {
-    child.kill("SIGTERM");
-  } catch {
-    /* already gone */
-  }
+  signalGroup(child, "SIGTERM");
   setTimeout(() => {
     if (child.exitCode === null && child.signalCode === null) killTree(child);
   }, 2000).unref();
@@ -1315,6 +1329,9 @@ function runCodex(args, promptStdin, { onProgress, onEvent, signal, until } = {}
     let command = config.codexBin;
     let spawnArgs = args;
     const opts = { stdio: ["pipe", "pipe", "pipe"], env: process.env, windowsHide: true };
+    // Its own process group, so a cancel or timeout can stop everything Codex
+    // starts (see signalGroup). The server's own shutdown kills it explicitly.
+    if (process.platform !== "win32") opts.detached = true;
     if (needsShell) {
       opts.shell = true;
       ({ command, args: spawnArgs } = cmdShellCommand(config.codexBin, args));
