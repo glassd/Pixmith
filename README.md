@@ -350,26 +350,36 @@ own `job_id`. With a `filename`, variants are numbered: `logo-1.png`, `logo-2.pn
 
 ### `get_image_result` — collect a slower job
 
-| Param    | Type   | Required | Description                                                     |
-|----------|--------|----------|-----------------------------------------------------------------|
-| `job_id` | string | ❌       | The job to fetch. Defaults to the most recent job.              |
+| Param    | Type   | Required | Description                                                                                   |
+|----------|--------|----------|-----------------------------------------------------------------------------------------------|
+| `job_id` | string | ❌       | The job to fetch. Optional only when a single job could be meant (see below); pass it always. |
 
 Waits up to the wait window, then returns. While the job is waiting for a slot or still
 rendering it returns `status: queued` or `status: running` with the current stage,
 elapsed time and an estimate of what is left; the assistant simply calls it again until
 `status: done`. Results can be fetched more than once, so an image is never lost to a
-client-side timeout — call `get_image_result` with no arguments to recover it. A finished
-image's `job_id` keeps working afterwards, even after Pixmith restarts (it is looked up in
-the [image history](#list_images--find-earlier-images)).
+client-side timeout. A finished image's `job_id` keeps working afterwards, even after
+Pixmith restarts (it is looked up in the [image history](#list_images--find-earlier-images)).
+
+**Without a `job_id`.** An MCP client such as Claude Desktop runs one Pixmith server for
+all its conversations, and Pixmith cannot tell them apart, so "the latest job" may be
+another conversation's. Without a `job_id`, `get_image_result` therefore picks a job only
+when exactly one could be meant: the only job whose result has not been returned yet
+(queued, running, or finished after its call timed out), or failing that the only job that
+finished in the last 10 minutes. The result then says which prompt it picked. When several
+jobs qualify it picks none and fails with `[ambiguous_job]`, listing each candidate's
+`job_id`, status, age and first words of its prompt (also as `candidates` in the
+structured output).
 
 ### `cancel_image` — stop a job
 
-| Param    | Type   | Required | Description                                                     |
-|----------|--------|----------|-----------------------------------------------------------------|
-| `job_id` | string | ❌       | The job to cancel. Defaults to the most recent unfinished job.  |
+| Param    | Type   | Required | Description                                                                 |
+|----------|--------|----------|-----------------------------------------------------------------------------|
+| `job_id` | string | ❌       | The job to cancel. Optional only when a single job is queued or running.   |
 
 A queued job is dropped; a running job's Codex session is killed at once, so it stops
-using your ChatGPT quota. Pixmith also stops every running session when the MCP client
+using your ChatGPT quota. Without a `job_id` it cancels the only queued or running job;
+with several, it cancels nothing and fails with `[ambiguous_job]`, listing them. Pixmith also stops every running session when the MCP client
 disconnects.
 
 ### `list_images` — find earlier images
@@ -686,9 +696,10 @@ plan usage and the output folder, and says what to do about each problem it find
 | `[credits_confirmation_needed]`      | The plan limit is used up and the job would run on paid credits. Tell the assistant whether to continue; see [plan usage and credits](#plan-usage-and-credits). |
 | `[generation_failed]` / `[no_output]`| Codex ran but produced nothing; see the `Detail:` stderr tail in the error. |
 | Windows: image isn't saved / sandbox error | Codex's OS sandbox is macOS/Linux only and blocks file writes on Windows. Pixmith bypasses it on Windows automatically (`PIXMITH_BYPASS_SANDBOX=true`). If you overrode that, unset it. |
-| Client times out during generation | No call waits longer than the wait window (45s by default). If your client's request timeout is shorter than ~60s, lower `PIXMITH_POLL_WAIT_MS` to match. The job keeps running either way — call `get_image_result` with no arguments to collect it. |
+| Client times out during generation | No call waits longer than the wait window (45s by default). If your client's request timeout is shorter than ~60s, lower `PIXMITH_POLL_WAIT_MS` to match. The job keeps running either way — call `get_image_result` with its `job_id` (or with no arguments, if it is the only job in progress) to collect it. |
 | "Tool result is too large. Maximum size is 1MB." | Your client caps tool results and `PIXMITH_MAX_INLINE_BYTES` is set too high for it (versions before 0.5.1 defaulted to 6 MB). Remove the override, or set it to `696320` or lower. |
-| `[unknown_job]`                      | The job_id expired (>15 min) or nothing was started — call `generate_image` first. |
+| `[unknown_job]`                      | The job_id expired (>15 min) or nothing was started — call `generate_image` first. Without a `job_id`: no job is in progress or finished in the last 10 minutes. |
+| `[ambiguous_job]`                    | `get_image_result` or `cancel_image` was called without a `job_id` while several jobs could be meant (perhaps from other conversations). Call again with one of the listed `job_id`s. |
 | `[bad_request]`                      | The `size` breaks a gpt-image-2 limit (see [size limits](#size-limits)), `output_dir` is not absolute, or an input image is missing, too large, or not a PNG/JPEG/WebP/GIF. Fix the argument and retry. |
 | An edit changed more than asked      | Say explicitly what must stay the same ("change only X; keep Y unchanged"), and pass a fixed `size` if the framing moved. |
 | Jobs sit at `status: queued`         | More jobs were started than `PIXMITH_MAX_CONCURRENT` allows. They run in order; raise the limit if your plan can take it. |

@@ -26,8 +26,11 @@ import { creditGate, readUsage as readCodexUsage, usageLines, usageSummary } fro
 //                                common case is ONE call that returns the image.
 //                                (A job caught in its final stage when the
 //                                window closes gets config.finishGraceMs more.)
-//   get_image_result             picks up a job that needed longer (job_id
-//                                optional — defaults to the latest job).
+//   get_image_result             picks up a job that needed longer. job_id is
+//                                optional, but see resolveJob: one server is
+//                                shared by every conversation of a client, so
+//                                the fallback only picks a job when exactly
+//                                one could be meant.
 //   cancel_image                 stops a queued or running job.
 //   pixmith_status               checks Codex, sign-in, plan usage and folders
 //                                without making an image.
@@ -56,6 +59,22 @@ const ERROR_SCHEMA = {
     next_step: { type: "string", description: "What the user can do about it." },
   },
   required: ["kind", "message"],
+};
+
+const CANDIDATES_SCHEMA = {
+  type: "array",
+  description:
+    "With error kind ambiguous_job: the jobs that could have been meant, newest first. Call again with one's job_id.",
+  items: {
+    type: "object",
+    properties: {
+      job_id: { type: "string" },
+      status: { type: "string" },
+      prompt: { type: "string", description: "The first words of the job's prompt." },
+      age_seconds: { type: "integer", description: "Seconds since the job was started." },
+    },
+    required: ["job_id", "status", "prompt", "age_seconds"],
+  },
 };
 
 const USAGE_SCHEMA = {
@@ -144,6 +163,7 @@ export const JOB_OUTPUT_SCHEMA = {
       items: { type: "object", properties: JOB_PROPERTIES, required: ["status"] },
       description: "With variants > 1: each variant's result, in order. The top-level status then summarises them.",
     },
+    candidates: CANDIDATES_SCHEMA,
   },
   required: ["status"],
 };
@@ -262,12 +282,16 @@ export const CANCEL_OUTPUT_SCHEMA = {
     previous_status: { type: "string", enum: ["queued", "running"] },
     elapsed_seconds: { type: "integer" },
     error: ERROR_SCHEMA,
+    candidates: CANDIDATES_SCHEMA,
   },
   required: ["status"],
 };
 
 /** Stages in which the image already exists and only bookkeeping remains. */
 const FINAL_STAGES = new Set(["finishing", "saving"]);
+
+/** How long a finished job can still be picked by get_image_result without a job_id. */
+export const RECENT_JOB_MS = 10 * 60 * 1000;
 
 const secs = (ms) => Math.max(0, Math.round(ms / 1000));
 
@@ -428,12 +452,18 @@ export function createTools({
       `Fetch the result of a generate_image / edit_image job. Waits up to ~${waitSecs}s for it to finish. ` +
       'If the returned status is "queued" or "running", call this again — repeat until status is "done". ' +
       "On success it returns the saved absolute PNG path and, when small enough, the image inline. " +
-      "job_id is optional: without it the most recent job is used, so a result can still be recovered if an earlier call timed out. " +
-      "A finished image's job_id keeps working later, even after a restart.",
+      "Always pass the job_id you were given: this server may be shared with other conversations. Without one, the call " +
+      "picks the only job whose result has not been collected yet (so a result can still be recovered if an earlier call " +
+      "timed out), else the only job that finished in the last 10 minutes; when several could be meant it fails with " +
+      "[ambiguous_job] and lists their job_ids. A finished image's job_id keeps working later, even after a restart.",
     inputSchema: {
       type: "object",
       properties: {
-        job_id: { type: "string", description: "Optional. The job_id to fetch. Defaults to the most recent job." },
+        job_id: {
+          type: "string",
+          description:
+            "The job_id to fetch, from the generate_image / edit_image result. Optional only when a single job could be meant.",
+        },
       },
       additionalProperties: false,
     },
@@ -444,13 +474,15 @@ export function createTools({
     name: "cancel_image",
     description:
       "Cancel a queued or running image job. A running job's Codex session is stopped immediately, so it stops consuming the " +
-      "ChatGPT plan's quota. job_id is optional: without it the most recent unfinished job is cancelled.",
+      "ChatGPT plan's quota. Always pass the job_id: this server may be shared with other conversations. Without one, " +
+      "the call cancels the only queued or running job; when there are several it cancels nothing, fails with " +
+      "[ambiguous_job] and lists their job_ids.",
     inputSchema: {
       type: "object",
       properties: {
         job_id: {
           type: "string",
-          description: "Optional. The job to cancel. Defaults to the most recent unfinished job.",
+          description: "The job to cancel. Optional only when a single job is queued or running.",
         },
       },
       additionalProperties: false,
@@ -594,7 +626,22 @@ export function createTools({
     }
 
     if (common.wait) await waitWithProgress(list, request, extra);
-    return list.length === 1 ? report(list[0], { justStarted: true }) : batchReport(list, { justStarted: true });
+    const res =
+      list.length === 1 ? await report(list[0], { justStarted: true }) : await batchReport(list, { justStarted: true });
+    markCollected(list, extra);
+    return res;
+  }
+
+  /**
+   * Remember which finished jobs' results reached a caller, so get_image_result
+   * without a job_id does not consider them uncollected. A cancelled request's
+   * result is never delivered, so it does not count.
+   */
+  function markCollected(list, extra) {
+    if (extra?.signal?.aborted) return;
+    for (const job of list) {
+      if (job.status === "done" || job.status === "error") job.collected = true;
+    }
   }
 
   // ---- waiting + progress -----------------------------------------------------------
@@ -838,10 +885,11 @@ export function createTools({
   }
 
   /** The result for a single job. */
-  async function report(job, { justStarted = false } = {}) {
+  async function report(job, { justStarted = false, note = null } = {}) {
     const p = await jobParts(job, { justStarted });
-    if (p.errorText) return withData(errorResult(p.errorText), p.data);
+    if (p.errorText) return withData(errorResult(note ? `${p.errorText}\n\n${note}` : p.errorText), p.data);
     const lines = [...p.head, ...(p.usage?.lines ?? []), ...p.tail, "", p.footer];
+    if (note) lines.push("", note);
     const content = [{ type: "text", text: lines.join("\n") }];
     if (p.image) content.push(p.image);
     return withData({ content }, p.data);
@@ -904,7 +952,61 @@ export function createTools({
 
   // ---- get_image_result / cancel_image --------------------------------------------------
 
-  async function resolveJob(args, { activeOnly = false } = {}) {
+  /**
+   * The job a call without a job_id means. One Pixmith process serves every
+   * conversation of an MCP client, and over stdio the request context cannot
+   * tell them apart (there is no session id), so "the latest job" may well be
+   * another conversation's. Only an unambiguous pick is made:
+   *
+   *   cancel_image      the only queued or running job.
+   *   get_image_result  the only job whose result has not been collected yet
+   *                     (queued, running, or finished but never returned, e.g.
+   *                     because its call timed out); failing that, the only
+   *                     job that finished in the last RECENT_JOB_MS.
+   *
+   * Several candidates fail with ambiguous_job, listing them so the caller can
+   * pick its own.
+   */
+  function guessJob({ forCancel }) {
+    const now = Date.now();
+    const all = jobs.all();
+    const recent = (j) => j.finishedAt && now - j.finishedAt <= RECENT_JOB_MS;
+    let pool = all.filter((j) => jobs.isActive(j));
+    if (!forCancel) {
+      pool = all.filter((j) => jobs.isActive(j) || (!j.collected && j.status !== "cancelled" && recent(j)));
+      if (!pool.length) pool = all.filter(recent);
+    }
+    if (pool.length === 1) return pool[0];
+    if (!pool.length) {
+      throw new PixmithError(
+        "unknown_job",
+        forCancel
+          ? "There is no queued or running job to cancel."
+          : `No job_id given, and no job is in progress or finished in the last ${RECENT_JOB_MS / 60_000} minutes. ` +
+              "Pass the job_id (list_images lists earlier images with theirs), or start a job with generate_image.",
+      );
+    }
+    const candidates = pool.map((j) => ({
+      job_id: j.id,
+      status: j.status,
+      prompt: promptStart(j.prompt),
+      age_seconds: secs(now - j.queuedAt),
+    }));
+    const err = new PixmithError(
+      "ambiguous_job",
+      `No job_id given, and ${pool.length} jobs could be meant (other conversations may be using this Pixmith ` +
+        `server too), so ${forCancel ? "nothing was cancelled" : "none was picked"}. ` +
+        `Call ${forCancel ? "cancel_image" : "get_image_result"} again with your job's job_id:\n` +
+        candidates
+          .map((c) => `- ${c.job_id}: ${c.status}, started ${ago(c.age_seconds)} ago — "${c.prompt}"`)
+          .join("\n"),
+    );
+    err.candidates = candidates;
+    throw err;
+  }
+
+  /** The job a call names, or the one guessJob picks; `guessed` says which. */
+  async function resolveJob(args, { forCancel = false } = {}) {
     const jobId = args.job_id;
     if (jobId != null && (typeof jobId !== "string" || !jobId.trim())) {
       throw new PixmithError("bad_request", "`job_id` must be a non-empty string when provided.");
@@ -931,28 +1033,27 @@ export function createTools({
           `No job found for job_id "${jobId}". Call list_images to find earlier images, or start a new one with generate_image.`,
         );
       }
-      return job;
+      return { job, guessed: false };
     }
-    const job = jobs.latest({ activeOnly });
-    if (!job) {
-      throw new PixmithError(
-        "unknown_job",
-        activeOnly
-          ? "There is no queued or running job to cancel."
-          : "No jobs yet — call generate_image or edit_image first.",
-      );
-    }
-    return job;
+    return { job: guessJob({ forCancel }), guessed: true };
   }
 
+  /** Said when guessJob picked the job, so a caller can notice it is not theirs. */
+  const guessNote = (job) =>
+    `(No job_id given: picked the only candidate, the job for "${promptStart(job.prompt)}". ` +
+    "If that is not the one you meant, call again with its job_id.)";
+
   async function getResult(args, request, extra) {
-    const job = await resolveJob(args);
+    const { job, guessed } = await resolveJob(args);
     await waitWithProgress(job, request, extra);
-    return report(job);
+    const res = await report(job, { note: guessed ? guessNote(job) : null });
+    markCollected([job], extra);
+    return res;
   }
 
   async function cancel(args) {
-    const job = await resolveJob(args, { activeOnly: args.job_id == null });
+    const { job, guessed } = await resolveJob(args, { forCancel: true });
+    const picked = guessed ? ["", guessNote(job)] : [];
     const was = await jobs.cancel(job);
     if (was === null) {
       const note =
@@ -967,7 +1068,7 @@ export function createTools({
     }
     if (jobs.isActive(job)) {
       const note = "Cancellation was requested and the Codex session is being stopped; it has not exited yet.";
-      return withData(text([`status: ${job.status}`, `job_id: ${job.id}`, "", note]), {
+      return withData(text([`status: ${job.status}`, `job_id: ${job.id}`, "", note, ...picked]), {
         status: job.status,
         job_id: job.id,
         cancel_requested: true,
@@ -979,7 +1080,7 @@ export function createTools({
       was === "queued"
         ? "The job was removed from the queue before it started."
         : `The running job was stopped after ${elapsed}s. No image was produced.`;
-    return withData(text(["status: cancelled", `job_id: ${job.id}`, "", note]), {
+    return withData(text(["status: cancelled", `job_id: ${job.id}`, "", note, ...picked]), {
       status: "cancelled",
       job_id: job.id,
       cancel_requested: true,
@@ -1127,6 +1228,21 @@ function text(lines) {
   return { content: [{ type: "text", text: lines.join("\n") }] };
 }
 
+/** The first few words of a prompt, enough to tell jobs apart. */
+function promptStart(prompt) {
+  const full = String(prompt ?? "")
+    .trim()
+    .replace(/\s+/g, " ");
+  let start = full.split(" ").slice(0, 8).join(" ");
+  if (start.length > 60) start = start.slice(0, 60).trimEnd();
+  return start.length < full.length ? `${start}…` : start;
+}
+
+/** "42s" or "3 min". */
+function ago(seconds) {
+  return seconds < 90 ? `${seconds}s` : `${Math.round(seconds / 60)} min`;
+}
+
 /** What the user can do about each kind of failure — appended to the error text. */
 const NEXT_STEPS = {
   binary_missing:
@@ -1141,6 +1257,9 @@ const NEXT_STEPS = {
   generation_failed: "If the request was refused, rephrase the prompt; otherwise retry.",
   no_output:
     'Retry once. If it keeps failing, call pixmith_status, and run `codex exec "hello"` to check that Codex itself works.',
+  ambiguous_job:
+    "Pass the job_id from the generate_image / edit_image result that started your job. If none of these is yours, " +
+    "list_images lists finished images with their job_ids.",
 };
 
 export function formatError(err) {
@@ -1164,6 +1283,7 @@ function errorData(err, job = null) {
     job_id: job?.id,
     mode: job?.mode,
     error: { kind, message: err?.message || String(err), next_step: NEXT_STEPS[kind] },
+    candidates: err?.candidates,
   };
 }
 
