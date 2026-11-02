@@ -131,3 +131,19 @@ test("formatBytes", () => {
   assert.equal(formatBytes(31.4 * 1024 * 1024), "31.4 MB");
   assert.equal(formatBytes(3 * 1024 ** 3), "3.0 GB");
 });
+
+test("prune and stats never treat an image's only copy as a duplicate", async () => {
+  // When Pixmith could not write its own copy, 0.6.0 returned Codex's file and
+  // recorded that same file as the duplicate.
+  await fs.rm(generated, { recursive: true, force: true });
+  const only = path.join(generated, "only", "ig_1.png");
+  await fs.mkdir(path.dirname(only), { recursive: true });
+  await fs.writeFile(only, "png-only");
+  const history = historyOf([{ job_id: "only", path: only, codex_copy: only }]);
+
+  assert.deepEqual(await codexCopyStats(history), { count: 0, bytes: 0 });
+  const result = await pruneCodexCopies({ history });
+  assert.deepEqual(result.removed, []);
+  assert.deepEqual(result.kept, [{ path: only, reason: "it is the only copy of the image" }]);
+  assert.ok(await exists(only), "the image survives");
+});

@@ -1070,7 +1070,10 @@ export async function generateImage({
       }
       // PIXMITH_CODEX_COPIES=remove: our copy is written and checked, so Codex's
       // duplicate under CODEX_HOME can go (Codex has exited by now).
-      let codexHomeCopy = sourcePng ? path.resolve(sourcePng) : null;
+      // Codex's file is a duplicate only when Pixmith saved its own copy; when
+      // that copy failed, Codex's file IS the result and must not be recorded
+      // as a spare copy (prune-codex-copies would delete it).
+      let codexHomeCopy = sourcePng && finalPath === ownCopy ? path.resolve(sourcePng) : null;
       if (
         codexHomeCopy &&
         finalPath === ownCopy &&

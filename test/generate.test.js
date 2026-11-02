@@ -482,3 +482,22 @@ test("generateImage: PIXMITH_CODEX_COPIES=remove deletes Codex's copy once ours 
     config.codexCopies = "keep";
   }
 });
+
+test(
+  "generateImage: when its own copy can't be written, Codex's file is the result and not recorded as a duplicate",
+  { skip: isWindows || process.getuid?.() === 0 ? "needs POSIX permissions as a normal user" : false },
+  async () => {
+    process.env.FAKE_MODE = "ok";
+    await reset();
+    const readOnly = path.join(root, "read-only");
+    await fs.mkdir(readOnly, { recursive: true });
+    await fs.chmod(readOnly, 0o555);
+    try {
+      const res = await generateImage({ prompt: "a fox", outputDir: readOnly });
+      assert.ok(res.path.startsWith(path.join(codexHome, "generated_images")), res.path);
+      assert.equal(res.codexHomeCopy, null, "the only copy must never be offered for pruning");
+    } finally {
+      await fs.chmod(readOnly, 0o755);
+    }
+  },
+);
