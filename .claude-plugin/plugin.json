@@ -1,6 +1,6 @@
 {
   "name": "pixmith",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Generate and edit images in Claude Code on your ChatGPT subscription, by driving the OpenAI Codex CLI (gpt-image-2). No image API key. Includes skills for writing strong image prompts and for producing project assets at exact sizes.",
   "author": { "name": "glassd", "url": "https://github.com/glassd" },
   "homepage": "https://github.com/glassd/Pixmith",

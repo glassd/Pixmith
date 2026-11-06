@@ -309,7 +309,7 @@ No parameters. Checks everything that decides whether an image can be made, with
 making one (so it uses no plan quota), and says what to do about each problem:
 
 ```
-Pixmith 0.5.1: ready to make images.
+Pixmith 0.6.1: ready to make images.
 
 Codex: version 0.46.0 at /opt/homebrew/bin/codex
 Signed in: yes, with a ChatGPT account
@@ -452,7 +452,7 @@ Every image gets a small JSON file beside it with the same name (`a-red-fox-….
 
 ```json
 {
-  "pixmith_version": "0.5.1",
+  "pixmith_version": "0.6.1",
   "created_at": "2026-10-05T21:40:12.345Z",
   "mode": "edit",
   "prompt": "make the sky a stormy purple; keep everything else unchanged",
