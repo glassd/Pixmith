@@ -178,6 +178,11 @@ test("generateImage: classifies usage limits and refusals", async () => {
     generateImage({ prompt: "a fox" }),
     (e) => e.kind === "generation_failed" && /content policy/.test(e.message),
   );
+  // A refused prompt that itself mentions signing in is still a refusal, not "not signed in".
+  await assert.rejects(
+    generateImage({ prompt: "a login page with a 'Please log in' button" }),
+    (e) => e.kind === "generation_failed" && /content policy/.test(e.message),
+  );
 });
 
 test("generateImage: text split mid-character across output chunks is decoded intact", async () => {

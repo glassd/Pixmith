@@ -1,7 +1,7 @@
 import { constants, promises as fs } from "node:fs";
 import path from "node:path";
 
-import { runCodexCommand } from "./codex.js";
+import { commandNotFound, runCodexCommand } from "./codex.js";
 import { codexCopyStats } from "./prune.js";
 import { limitReached, usageSummary } from "./usage.js";
 
@@ -89,7 +89,7 @@ export async function checkStatus({
   const looksLikePath = path.isAbsolute(bin) || bin.includes("/") || bin.includes("\\");
   const missing =
     versionRun.error === "ENOENT" ||
-    /is not recognized as an internal or external command/i.test(versionRun.stderr) ||
+    commandNotFound(versionRun.stderr, versionRun.code) ||
     (looksLikePath && !(await exists(bin)));
   const version = parseCodexVersion(versionRun.stdout) ?? parseCodexVersion(versionRun.stderr);
   const codex = { bin: config.codexBin, found: !missing && versionRun.error !== "unsafe_path", version };

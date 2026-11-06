@@ -772,11 +772,22 @@ const AUTH_PHRASES = [
 /**
  * Heuristic: does Codex's output look like an auth failure? Only consulted
  * AFTER we've established that no image was produced, so a stray phrase inside
- * a successful run can never turn it into an error.
+ * a successful run can never turn it into an error. Pass Codex's error output
+ * and error events, never its stdout: with --json that is the event stream,
+ * which can carry the image prompt itself ("a page with a Please log in button").
  */
-export function detectAuthFailure(stderr, stdout) {
-  const hay = `${stderr}\n${stdout}`.toLowerCase();
+export function detectAuthFailure(...texts) {
+  const hay = texts.filter(Boolean).join("\n").toLowerCase();
   return AUTH_PHRASES.some((p) => hay.includes(p));
+}
+
+/**
+ * Did the shell report that the command doesn't exist? A Windows .cmd shim, or
+ * a bare `codex` on PATH, runs through cmd.exe, so a missing Codex shows up as
+ * "is not recognized ..." with exit code 1 or 9009 rather than as ENOENT.
+ */
+export function commandNotFound(stderr, code) {
+  return code === 9009 || /is not recognized as an internal or external command/i.test(stderr || "");
 }
 
 /**
@@ -1112,10 +1123,10 @@ export async function generateImage({
     );
   }
 
-  if (detectAuthFailure(stderr, stdout)) {
+  if (!sessionId && commandNotFound(stderr, code)) {
     throw new PixmithError(
-      "not_signed_in",
-      "Codex is not signed in. Sign in to Codex with your ChatGPT account (open the Codex app, or run `codex login`), then retry.",
+      "binary_missing",
+      `Could not find the Codex binary ("${config.codexBin}"). Install the Codex CLI and ensure it's on your PATH, or set CODEX_BIN to its absolute path.`,
       tail(stderr),
     );
   }
@@ -1129,9 +1140,18 @@ export async function generateImage({
     );
   }
 
+  // The agent's own refusal first: it means Codex was running and signed in.
   const marker = parseMarker(lastMessage) || parseMarker(agentText) || parseMarker(stdout);
   if (marker && marker.ok === false) {
     throw new PixmithError("generation_failed", `Codex reported a generation failure: ${marker.reason}`, tail(stderr));
+  }
+
+  if (detectAuthFailure(stderr, reported)) {
+    throw new PixmithError(
+      "not_signed_in",
+      "Codex is not signed in. Sign in to Codex with your ChatGPT account (open the Codex app, or run `codex login`), then retry.",
+      tail(stderr),
+    );
   }
   if (reported) {
     throw new PixmithError("generation_failed", `Codex reported an error: ${tail(reported, 400)}`, tail(stderr));

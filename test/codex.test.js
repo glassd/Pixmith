@@ -8,6 +8,7 @@ import {
   buildPrompt,
   cleanFilename,
   cmdShellCommand,
+  commandNotFound,
   detectAuthFailure,
   detectImageType,
   detectUsageLimit,
@@ -67,6 +68,8 @@ test("detectAuthFailure: matches real sign-in phrases only", () => {
   // A prompt echoed back containing "unauthorized" is not an auth failure.
   assert.equal(detectAuthFailure("user\na sign reading UNAUTHORIZED PERSONNEL", "DONE"), false);
   assert.equal(detectAuthFailure("", ""), false);
+  // Several sources may be passed; empty ones are ignored.
+  assert.equal(detectAuthFailure("", null, "error: 401 Unauthorized"), true);
 });
 
 test("buildPrompt: embeds prompt and size and the DONE/ERROR contract", () => {
@@ -372,4 +375,17 @@ test("buildPrompt / fastPathPrompt: the background option", () => {
     /^Generate exactly ONE raster image\. Transparent background: a PNG with an alpha channel/,
   );
   assert.match(fastPathPrompt("a logo", "auto", "opaque"), /Opaque background, with no transparency anywhere\./);
+});
+
+test("commandNotFound: cmd.exe's way of saying the command doesn't exist", () => {
+  assert.equal(
+    commandNotFound(
+      "'codex' is not recognized as an internal or external command,\r\noperable program or batch file.",
+      1,
+    ),
+    true,
+  );
+  assert.equal(commandNotFound("", 9009), true);
+  assert.equal(commandNotFound("error: something else", 1), false);
+  assert.equal(commandNotFound(undefined, 0), false);
 });

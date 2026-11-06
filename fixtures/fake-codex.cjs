@@ -116,6 +116,8 @@ process.stdin.on("end", () => {
     return;
   }
   if (mode === "refuse") {
+    // Like the fast path's `cat` of the prompt file: the prompt travels in the event stream.
+    emit({ type: "item.completed", item: { id: "item_0", type: "command_execution", aggregated_output: stdin } });
     emit({ type: "item.completed", item: { id: "item_1", type: "agent_message", text: "ERROR: content policy" } });
     fs.writeFileSync(lastMsg, "ERROR: content policy");
     return;
