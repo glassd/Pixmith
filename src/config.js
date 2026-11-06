@@ -69,10 +69,11 @@ function envBool(name, fallback) {
  * PIXMITH_ALLOWED_DIRS: folders output_dir may point into, separated like PATH
  * (":" on macOS/Linux, ";" on Windows). Returns null when unset (any absolute
  * folder is allowed), else the resolved absolute folders, possibly none.
- * Relative entries are ignored with a warning: they would depend on the
- * server's working directory.
+ * A leading "~" means the home folder, as in PIXMITH_OUTPUT_DIR. Relative
+ * entries are ignored with a warning: they would depend on the server's
+ * working directory.
  */
-export function parseAllowedDirs(raw, warnings = configWarnings, delimiter = path.delimiter) {
+export function parseAllowedDirs(raw, warnings = configWarnings, delimiter = path.delimiter, home = HOME) {
   if (raw == null || raw.trim() === "") return null;
   const dirs = [];
   const entries = raw
@@ -80,7 +81,8 @@ export function parseAllowedDirs(raw, warnings = configWarnings, delimiter = pat
     .map((e) => e.trim())
     .filter(Boolean);
   for (const entry of entries) {
-    if (path.isAbsolute(entry)) dirs.push(path.resolve(entry));
+    const dir = expandHome(entry, home);
+    if (path.isAbsolute(dir)) dirs.push(path.resolve(dir));
     else warnings.push(`PIXMITH_ALLOWED_DIRS entry "${entry}" is not an absolute path and was ignored.`);
   }
   return dirs;

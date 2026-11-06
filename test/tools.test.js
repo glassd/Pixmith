@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { PixmithError } from "../src/codex.js";
 import { JobManager } from "../src/jobs.js";
-import { RECENT_JOB_MS, createTools, formatError } from "../src/tools.js";
+import { RECENT_JOB_MS, createTools, formatError, pruneFlags } from "../src/tools.js";
 import { noisyPng } from "../fixtures/noisy-png.js";
 
 const PNG = Buffer.concat([
@@ -525,6 +525,34 @@ test("inline image: a file that cannot be previewed degrades to a note, never an
       res.content.some((c) => c.type === "image"),
       false,
     );
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test("pruneFlags: names the server's state folder, quotes spaces, and adds a non-default Codex home", () => {
+  const home = path.join(os.homedir(), ".codex");
+  assert.equal(pruneFlags({ stateDir: "/data/state", codexHome: home }, home), "--state-dir /data/state");
+  assert.equal(
+    pruneFlags({ stateDir: "/Users/me/Library/Application Support/Pixmith", codexHome: "/opt/codex" }, home),
+    '--state-dir "/Users/me/Library/Application Support/Pixmith" --codex-home /opt/codex',
+  );
+});
+
+test("cancel_image: a job that finishes while the cancel lands is reported as done, not cancelled", async () => {
+  // The last save step ignores a cancel: generation resolves with its image.
+  const late = {};
+  const generate = (args) =>
+    new Promise((resolve) => args.signal.addEventListener("abort", () => resolve(late.result())));
+  const t = await setup({ pollWaitMs: 30, generate });
+  late.result = () => t.result();
+  try {
+    const started = await t.call("generate_image", { prompt: "a fox", wait: false });
+    const res = await t.call("cancel_image", { job_id: jobIdOf(started) });
+    assert.match(textOf(res), /^status: done/);
+    assert.match(textOf(res), /already being saved when the cancel arrived/);
+    assert.equal(res.structuredContent.status, "done");
+    assert.match(textOf(await t.call("get_image_result", { job_id: jobIdOf(started) })), /status: done/);
   } finally {
     await t.cleanup();
   }

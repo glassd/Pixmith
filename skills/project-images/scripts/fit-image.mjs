@@ -441,11 +441,12 @@ export async function run(argv) {
     const img = await readImage(pos[0]);
     const background = !opts.background || opts.background === "transparent" ? null : parseColor(opts.background);
     const out = fit(img, w, h, { mode: opts.mode ?? "cover", gravity: opts.gravity ?? "center", background });
-    const bytes = await writeImage(pos[1], out, {
-      quality: opts.quality ? +opts.quality : 88,
-      background: background ?? [255, 255, 255],
-    });
-    return { file: path.resolve(pos[1]), from: `${img.width}x${img.height}`, ...describe(out), bytes };
+    const flattenTo = background ?? [255, 255, 255];
+    const bytes = await writeImage(pos[1], out, { quality: opts.quality ? +opts.quality : 88, background: flattenTo });
+    // Describe what was written: JPEG has no alpha, so transparency was flattened onto the background.
+    const jpegOut = /\.jpe?g$/i.test(pos[1]);
+    const written = jpegOut ? { ...out, data: flattenOver(out.data, flattenTo) } : out;
+    return { file: path.resolve(pos[1]), from: `${img.width}x${img.height}`, ...describe(written), bytes };
   }
   if (cmd === "ico") {
     need(2, "ico <in> <out.ico> [--sizes 16,32,48]");

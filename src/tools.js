@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { normalizeSize } from "./config.js";
@@ -1019,6 +1020,20 @@ export function createTools({
       if (!job && history) {
         const entry = await history.find(id);
         if (entry) job = jobFromEntry(entry);
+        // The image itself may have been deleted since; then there is nothing to return.
+        if (
+          job?.result?.path &&
+          !(await fs.access(job.result.path).then(
+            () => true,
+            () => false,
+          ))
+        ) {
+          throw new PixmithError(
+            "unknown_job",
+            `The image for job_id "${id}" was deleted (it was at ${job.result.path}). ` +
+              "Call list_images to find other images, or make it again with generate_image.",
+          );
+        }
         // Codex's copy may have been pruned since.
         if (job?.result.codexHomeCopy) {
           job.result.codexHomeCopy = await fs.access(job.result.codexHomeCopy).then(
@@ -1068,6 +1083,20 @@ export function createTools({
     }
     if (jobs.isActive(job)) {
       const note = "Cancellation was requested and the Codex session is being stopped; it has not exited yet.";
+      return withData(text([`status: ${job.status}`, `job_id: ${job.id}`, "", note, ...picked]), {
+        status: job.status,
+        job_id: job.id,
+        cancel_requested: true,
+        previous_status: was,
+      });
+    }
+    // Codex may already have finished and the image be in its last save step,
+    // which a cancel no longer interrupts: report what actually happened.
+    if (job.status === "done" || job.status === "error") {
+      const note =
+        job.status === "done"
+          ? "The image was already being saved when the cancel arrived, so the job finished. Call get_image_result to fetch it."
+          : "The job ended with an error before the cancel took effect.";
       return withData(text([`status: ${job.status}`, `job_id: ${job.id}`, "", note, ...picked]), {
         status: job.status,
         job_id: job.id,
@@ -1187,7 +1216,8 @@ export function createTools({
       ...(r.codex_copies.count
         ? [
             `Codex's duplicate copies: ${r.codex_copies.count} image${r.codex_copies.count === 1 ? "" : "s"}, ${formatBytes(r.codex_copies.bytes)} ` +
-              "under CODEX_HOME. Run `npx pixmith prune-codex-copies` (from a source checkout: `node src/index.js prune-codex-copies`) " +
+              `under CODEX_HOME. Run \`npx pixmith prune-codex-copies ${pruneFlags(config)}\` ` +
+              `(from a source checkout: \`node src/index.js prune-codex-copies ${pruneFlags(config)}\`) ` +
               (r.codex_copies.policy === "remove"
                 ? "to delete them; new images no longer keep one."
                 : "to delete them, or set PIXMITH_CODEX_COPIES=remove so new ones are not kept."),
@@ -1222,6 +1252,19 @@ export function createTools({
   }
 
   return { tools: [GENERATE_TOOL, EDIT_TOOL, RESULT_TOOL, CANCEL_TOOL, LIST_TOOL, STATUS_TOOL], call };
+}
+
+/**
+ * Options that point a terminal run of `prune-codex-copies` at this server's
+ * own history and Codex folder. Without them a plugin or bundle install, whose
+ * state lives in a folder the terminal can't guess, would find nothing to do.
+ */
+export function pruneFlags(config, defaultCodexHome = path.join(os.homedir(), ".codex")) {
+  const quote = (p) => (/[\s"'`$&|;<>()]/.test(p) ? `"${p}"` : p);
+  const flags = [`--state-dir ${quote(config.stateDir)}`];
+  if (path.resolve(config.codexHome) !== path.resolve(defaultCodexHome))
+    flags.push(`--codex-home ${quote(config.codexHome)}`);
+  return flags.join(" ");
 }
 
 function text(lines) {

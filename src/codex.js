@@ -772,11 +772,22 @@ const AUTH_PHRASES = [
 /**
  * Heuristic: does Codex's output look like an auth failure? Only consulted
  * AFTER we've established that no image was produced, so a stray phrase inside
- * a successful run can never turn it into an error.
+ * a successful run can never turn it into an error. Pass Codex's error output
+ * and error events, never its stdout: with --json that is the event stream,
+ * which can carry the image prompt itself ("a page with a Please log in button").
  */
-export function detectAuthFailure(stderr, stdout) {
-  const hay = `${stderr}\n${stdout}`.toLowerCase();
+export function detectAuthFailure(...texts) {
+  const hay = texts.filter(Boolean).join("\n").toLowerCase();
   return AUTH_PHRASES.some((p) => hay.includes(p));
+}
+
+/**
+ * Did the shell report that the command doesn't exist? A Windows .cmd shim, or
+ * a bare `codex` on PATH, runs through cmd.exe, so a missing Codex shows up as
+ * "is not recognized ..." with exit code 1 or 9009 rather than as ENOENT.
+ */
+export function commandNotFound(stderr, code) {
+  return code === 9009 || /is not recognized as an internal or external command/i.test(stderr || "");
 }
 
 /**
@@ -1070,7 +1081,10 @@ export async function generateImage({
       }
       // PIXMITH_CODEX_COPIES=remove: our copy is written and checked, so Codex's
       // duplicate under CODEX_HOME can go (Codex has exited by now).
-      let codexHomeCopy = sourcePng ? path.resolve(sourcePng) : null;
+      // Codex's file is a duplicate only when Pixmith saved its own copy; when
+      // that copy failed, Codex's file IS the result and must not be recorded
+      // as a spare copy (prune-codex-copies would delete it).
+      let codexHomeCopy = sourcePng && finalPath === ownCopy ? path.resolve(sourcePng) : null;
       if (
         codexHomeCopy &&
         finalPath === ownCopy &&
@@ -1109,10 +1123,10 @@ export async function generateImage({
     );
   }
 
-  if (detectAuthFailure(stderr, stdout)) {
+  if (!sessionId && commandNotFound(stderr, code)) {
     throw new PixmithError(
-      "not_signed_in",
-      "Codex is not signed in. Sign in to Codex with your ChatGPT account (open the Codex app, or run `codex login`), then retry.",
+      "binary_missing",
+      `Could not find the Codex binary ("${config.codexBin}"). Install the Codex CLI and ensure it's on your PATH, or set CODEX_BIN to its absolute path.`,
       tail(stderr),
     );
   }
@@ -1126,9 +1140,18 @@ export async function generateImage({
     );
   }
 
+  // The agent's own refusal first: it means Codex was running and signed in.
   const marker = parseMarker(lastMessage) || parseMarker(agentText) || parseMarker(stdout);
   if (marker && marker.ok === false) {
     throw new PixmithError("generation_failed", `Codex reported a generation failure: ${marker.reason}`, tail(stderr));
+  }
+
+  if (detectAuthFailure(stderr, reported)) {
+    throw new PixmithError(
+      "not_signed_in",
+      "Codex is not signed in. Sign in to Codex with your ChatGPT account (open the Codex app, or run `codex login`), then retry.",
+      tail(stderr),
+    );
   }
   if (reported) {
     throw new PixmithError("generation_failed", `Codex reported an error: ${tail(reported, 400)}`, tail(stderr));
@@ -1199,8 +1222,26 @@ function killTree(child) {
       /* fall through */
     }
   }
+  signalGroup(child, "SIGKILL");
+}
+
+/**
+ * Signal Codex and everything it started (macOS/Linux). Codex is spawned as the
+ * leader of its own process group, so a negative pid also reaches the real
+ * program behind an npm-installed launcher, which cannot forward SIGKILL and
+ * would otherwise keep running (and keep the job open) after a cancel.
+ */
+function signalGroup(child, sig) {
+  if (child.pid) {
+    try {
+      process.kill(-child.pid, sig);
+      return;
+    } catch {
+      /* not a group leader, or already gone: fall back to the process itself */
+    }
+  }
   try {
-    child.kill("SIGKILL");
+    child.kill(sig);
   } catch {
     /* already gone */
   }
@@ -1212,11 +1253,7 @@ function stopGently(child) {
     killTree(child);
     return;
   }
-  try {
-    child.kill("SIGTERM");
-  } catch {
-    /* already gone */
-  }
+  signalGroup(child, "SIGTERM");
   setTimeout(() => {
     if (child.exitCode === null && child.signalCode === null) killTree(child);
   }, 2000).unref();
@@ -1312,6 +1349,9 @@ function runCodex(args, promptStdin, { onProgress, onEvent, signal, until } = {}
     let command = config.codexBin;
     let spawnArgs = args;
     const opts = { stdio: ["pipe", "pipe", "pipe"], env: process.env, windowsHide: true };
+    // Its own process group, so a cancel or timeout can stop everything Codex
+    // starts (see signalGroup). The server's own shutdown kills it explicitly.
+    if (process.platform !== "win32") opts.detached = true;
     if (needsShell) {
       opts.shell = true;
       ({ command, args: spawnArgs } = cmdShellCommand(config.codexBin, args));

@@ -187,3 +187,19 @@ test("CLI: fit to JPEG and PNG, ico, key-out and info round-trip through files",
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+
+test("CLI fit: a JPEG output reports what was written, with transparency flattened away", async () => {
+  const dir = await tmpdir();
+  try {
+    const src = path.join(dir, "wide.png");
+    await writePng(src, solid(200, 100, [0, 0, 255, 255]));
+    // contain pads with transparency, which a JPEG can't keep.
+    const r = await run(["fit", src, path.join(dir, "out.jpg"), "--size", "100x100", "--mode", "contain"]);
+    assert.equal(r.has_alpha, false);
+    assert.equal(r.transparent_percent, 0);
+    const info = await run(["info", r.file]);
+    assert.equal(info.has_alpha, r.has_alpha);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});

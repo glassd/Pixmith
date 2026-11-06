@@ -396,6 +396,12 @@ test("get_image_result: a finished image can still be collected after a restart"
     const unknown = await after.callTool("get_image_result", { job_id: "never-existed" });
     assert.equal(unknown.structuredContent.error.kind, "unknown_job");
     assert.match(unknown.content[0].text, /list_images/);
+
+    // Once the PNG is deleted, the job no longer claims to be done.
+    await fs.rm(png);
+    const deleted = await after.callTool("get_image_result", { job_id: jobId });
+    assert.equal(deleted.structuredContent.error.kind, "unknown_job");
+    assert.match(deleted.content[0].text, /was deleted/);
   } finally {
     await after.close();
     await fs.rm(state, { recursive: true, force: true });
@@ -642,7 +648,7 @@ test("pixmith_status: points out Codex's duplicate copies and how to delete them
     assert.deepEqual(res.structuredContent.codex_copies, { count: 1, bytes: 5, policy: "keep" });
     assert.match(
       res.content[0].text,
-      /^Codex's duplicate copies: 1 image, 5 bytes under CODEX_HOME\. Run `npx pixmith prune-codex-copies` .* or set PIXMITH_CODEX_COPIES=remove so new ones are not kept\.$/m,
+      /^Codex's duplicate copies: 1 image, 5 bytes under CODEX_HOME\. Run `npx pixmith prune-codex-copies --state-dir .*` .* or set PIXMITH_CODEX_COPIES=remove so new ones are not kept\.$/m,
     );
   } finally {
     await t.close();

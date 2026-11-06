@@ -178,6 +178,11 @@ test("generateImage: classifies usage limits and refusals", async () => {
     generateImage({ prompt: "a fox" }),
     (e) => e.kind === "generation_failed" && /content policy/.test(e.message),
   );
+  // A refused prompt that itself mentions signing in is still a refusal, not "not signed in".
+  await assert.rejects(
+    generateImage({ prompt: "a login page with a 'Please log in' button" }),
+    (e) => e.kind === "generation_failed" && /content policy/.test(e.message),
+  );
 });
 
 test("generateImage: text split mid-character across output chunks is decoded intact", async () => {
@@ -482,3 +487,49 @@ test("generateImage: PIXMITH_CODEX_COPIES=remove deletes Codex's copy once ours 
     config.codexCopies = "keep";
   }
 });
+
+test(
+  "generateImage: when its own copy can't be written, Codex's file is the result and not recorded as a duplicate",
+  { skip: isWindows || process.getuid?.() === 0 ? "needs POSIX permissions as a normal user" : false },
+  async () => {
+    process.env.FAKE_MODE = "ok";
+    await reset();
+    const readOnly = path.join(root, "read-only");
+    await fs.mkdir(readOnly, { recursive: true });
+    await fs.chmod(readOnly, 0o555);
+    try {
+      const res = await generateImage({ prompt: "a fox", outputDir: readOnly });
+      assert.ok(res.path.startsWith(path.join(codexHome, "generated_images")), res.path);
+      assert.equal(res.codexHomeCopy, null, "the only copy must never be offered for pruning");
+    } finally {
+      await fs.chmod(readOnly, 0o755);
+    }
+  },
+);
+
+test(
+  "generateImage: a cancel also stops what Codex started, as with npm's launcher",
+  { skip: isWindows ? "Windows uses taskkill /T" : false, timeout: 20_000 },
+  async () => {
+    process.env.FAKE_MODE = "launcher";
+    await reset();
+    const pidFile = path.join(codexHome, "grandchild.pid");
+    await fs.rm(pidFile, { force: true });
+    const ac = new AbortController();
+    const onStage = (s) => s === "session_started" && setTimeout(() => ac.abort(), 300);
+    await assert.rejects(generateImage({ prompt: "a fox", signal: ac.signal, onStage }), (e) => e.kind === "cancelled");
+    const pid = Number(await fs.readFile(pidFile, "utf8"));
+    const alive = () => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    for (let i = 0; i < 20 && alive(); i += 1) await new Promise((r) => setTimeout(r, 50));
+    const stillAlive = alive();
+    if (stillAlive) process.kill(pid, "SIGKILL");
+    assert.equal(stillAlive, false, "the launcher's child must be stopped too");
+  },
+);

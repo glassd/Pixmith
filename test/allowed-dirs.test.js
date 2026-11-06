@@ -88,3 +88,13 @@ test(
       await ok(allowed.toUpperCase());
     }),
 );
+
+test("parseAllowedDirs: a leading ~ means the home folder, as in PIXMITH_OUTPUT_DIR", () => {
+  const warnings = [];
+  const home = path.resolve("/home/u");
+  assert.deepEqual(
+    parseAllowedDirs(["~/Pictures", "~/projects"].join(path.delimiter), warnings, path.delimiter, home),
+    [path.join(home, "Pictures"), path.join(home, "projects")],
+  );
+  assert.deepEqual(warnings, []);
+});

@@ -90,6 +90,16 @@ process.stdin.on("end", () => {
     setInterval(() => {}, 1000);
     return;
   }
+  if (mode === "launcher") {
+    // Like npm's codex launcher: the real program runs as a child that shares
+    // this process's output, and a SIGKILL sent to the launcher alone never
+    // reaches it.
+    const { spawn } = require("node:child_process");
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "inherit" });
+    fs.writeFileSync(path.join(home, "grandchild.pid"), String(child.pid));
+    setInterval(() => {}, 1000);
+    return;
+  }
   if (mode === "limit") {
     emit({ type: "turn.failed", error: { message: "You've hit your usage limit. Try again in 2 hours." } });
     process.exit(1);
@@ -106,6 +116,8 @@ process.stdin.on("end", () => {
     return;
   }
   if (mode === "refuse") {
+    // Like the fast path's `cat` of the prompt file: the prompt travels in the event stream.
+    emit({ type: "item.completed", item: { id: "item_0", type: "command_execution", aggregated_output: stdin } });
     emit({ type: "item.completed", item: { id: "item_1", type: "agent_message", text: "ERROR: content policy" } });
     fs.writeFileSync(lastMsg, "ERROR: content policy");
     return;

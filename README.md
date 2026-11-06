@@ -1,7 +1,7 @@
 # Pixmith
 
 <p align="center">
-  <img src="assets/hero.png" alt="Pixmith — a forging hammer coming down on a glowing cube of pixels on an anvil, square embers scattering to both sides" width="100%">
+  <img src="assets/hero.png" alt="Pixmith — a blacksmith's hammer striking a glowing cube of pixels on an anvil in a dark forge, square embers flying" width="100%">
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -309,7 +309,7 @@ No parameters. Checks everything that decides whether an image can be made, with
 making one (so it uses no plan quota), and says what to do about each problem:
 
 ```
-Pixmith 0.5.1: ready to make images.
+Pixmith 0.6.1: ready to make images.
 
 Codex: version 0.46.0 at /opt/homebrew/bin/codex
 Signed in: yes, with a ChatGPT account
@@ -398,7 +398,7 @@ images that have been deleted since.
 
 The list comes from Pixmith's image history, `history.jsonl` in its state folder
 (`PIXMITH_STATE_DIR`, default `.pixmith/`), which gets one line per finished image and
-keeps the newest 1,000. It holds your prompts; delete the file to clear the history.
+keeps the newest 1,000 (it is trimmed back to 1,000 once it passes 1,500). It holds your prompts; delete the file to clear the history.
 Servers sharing a state folder (e.g. Claude Desktop and Claude Code) share the history.
 
 ### Structured results
@@ -452,7 +452,7 @@ Every image gets a small JSON file beside it with the same name (`a-red-fox-….
 
 ```json
 {
-  "pixmith_version": "0.5.1",
+  "pixmith_version": "0.6.1",
   "created_at": "2026-10-05T21:40:12.345Z",
   "mode": "edit",
   "prompt": "make the sky a stormy purple; keep everything else unchanged",
@@ -483,9 +483,11 @@ space. `pixmith_status` shows how much that is. Two ways to reclaim it:
 - **New images:** set `PIXMITH_CODEX_COPIES=remove`, and Pixmith deletes Codex's copy
   (and its emptied session folder) as soon as its own copy is saved. The default is
   `keep`, because those files belong to Codex and the Codex app may show them.
-- **Existing images:** run `npx pixmith prune-codex-copies` (from a source checkout:
+- **Existing images:** run the command `pixmith_status` prints, e.g.
+  `npx pixmith prune-codex-copies --state-dir <folder>` (from a source checkout:
   `node src/index.js prune-codex-copies`); add `--dry-run` to see what it would delete
-  first. It works from the [image history](#list_images--find-earlier-images) and deletes
+  first. `--state-dir` points it at the server's own image history, which matters for
+  the plugin and the Desktop bundle, and `--codex-home` covers a non-default `CODEX_HOME`. It works from the [image history](#list_images--find-earlier-images) and deletes
   a Codex copy only when Pixmith's copy still exists with exactly the same bytes, and only
   inside `generated_images` (a symlink cannot lead it anywhere else).
 
@@ -603,7 +605,7 @@ Claude Code; its zip is attached as well for anyone who wants it elsewhere.
 | `PIXMITH_USE_CREDITS`      | `ask`                                                | When the plan limit is used up: `ask` (require `use_credits: true`), `always` (run on credits without asking), or `never` (refuse). |
 | `PIXMITH_STATE_DIR`        | `<project>/.pixmith` (installed: per-user app folder; plugin: its data folder; see [where files go](#from-source)) | Where Pixmith keeps its own state: recent job durations (used for time estimates) and the image history behind `list_images`. |
 | `PIXMITH_OUTPUT_DIR`       | `<project>/images` (installed: `~/Pictures/Pixmith`)  | Default output directory for generated PNGs. A leading `~` means your home folder. The Claude Code plugin sets its default through `PIXMITH_DEFAULT_OUTPUT_DIR`, so your own `PIXMITH_OUTPUT_DIR` still takes priority. |
-| `PIXMITH_ALLOWED_DIRS`     | *(unset: any folder)*                                | Folders `output_dir` may point into, separated like `PATH` (`:` on macOS/Linux, `;` on Windows), e.g. `/Users/you/Pictures:/Users/you/projects`. The default output folder is always allowed. See [security notes](#security-notes). |
+| `PIXMITH_ALLOWED_DIRS`     | *(unset: any folder)*                                | Folders `output_dir` may point into, separated like `PATH` (`:` on macOS/Linux, `;` on Windows), e.g. `/Users/you/Pictures:/Users/you/projects` or `~/Pictures:~/projects`. The default output folder is always allowed. See [security notes](#security-notes). |
 | `CODEX_HOME`               | `~/.codex`                                            | Codex home (used to locate the backup `generated_images/` copy). |
 | `PIXMITH_TIMEOUT_MS`       | `300000` (5 min)                                     | Hard timeout per generation.                                    |
 | `PIXMITH_MAX_CONCURRENT`   | `1`                                                  | How many Codex generations may run at once. Extra jobs queue.   |

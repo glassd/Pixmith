@@ -35,16 +35,29 @@ export class ImageHistory {
       await fs.appendFile(this.file, line);
       // Trim only once well past the cap, so most appends stay a single write.
       const entries = await this.entries();
-      if (entries.length > this.maxEntries * 1.5) await this.rewrite(entries.slice(-this.maxEntries));
+      if (entries.length > this.maxEntries * 1.5) await this.rewrite(entries);
     } catch {
       /* best-effort */
     }
   }
 
-  async rewrite(entries) {
+  /**
+   * Replace the file with the newest maxEntries of `snapshot` (what was read).
+   * Another server sharing the state dir may append meanwhile, so the file is
+   * read again just before the swap and anything added since is carried over;
+   * if it shrank, someone else already trimmed it and this trim is skipped.
+   */
+  async rewrite(snapshot) {
     const tmp = `${this.file}.${process.pid}-${randomUUID()}.tmp`;
+    const lines = (entries) => entries.map((e) => `${JSON.stringify(e)}\n`).join("");
     try {
-      await fs.writeFile(tmp, entries.map((e) => `${JSON.stringify(e)}\n`).join(""));
+      await fs.writeFile(tmp, lines(snapshot.slice(-this.maxEntries)));
+      const now = await this.entries();
+      if (now.length < snapshot.length) {
+        await fs.unlink(tmp);
+        return;
+      }
+      if (now.length > snapshot.length) await fs.appendFile(tmp, lines(now.slice(snapshot.length)));
       await fs.rename(tmp, this.file);
     } catch {
       await fs.unlink(tmp).catch(() => {});

@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import { config } from "./config.js";
+import { config, expandHome } from "./config.js";
 import { ImageHistory } from "./history.js";
 import { formatBytes, pruneCodexCopies } from "./prune.js";
 
@@ -11,6 +11,8 @@ const USAGE = `Usage:
   pixmith                         start the MCP server (what MCP clients run)
   pixmith prune-codex-copies      delete Codex's duplicate copies of images Pixmith made
   pixmith prune-codex-copies --dry-run   only show what would be deleted
+    --state-dir <dir>     the server's state folder (PIXMITH_STATE_DIR), where its image history is
+    --codex-home <dir>    Codex's home folder, when it is not ~/.codex (CODEX_HOME)
   pixmith --version
   pixmith --help`;
 
@@ -30,13 +32,34 @@ export async function runCli(
     out(USAGE);
     return 0;
   }
-  const unknown = rest.filter((a) => a !== "--dry-run");
+  // A server installed as a plugin or bundle keeps its history in its own state
+  // folder, which a terminal run cannot know: pixmith_status prints the exact
+  // command, with these options filled in.
+  let dryRun = false;
+  let stateDir = config.stateDir;
+  const unknown = [];
+  for (let i = 0; i < rest.length; i += 1) {
+    const [flag, inline] = rest[i].split(/=(.*)/s);
+    if (flag === "--dry-run" && inline === undefined) {
+      dryRun = true;
+    } else if (flag === "--state-dir" || flag === "--codex-home") {
+      const value = inline ?? rest[(i += 1)];
+      if (!value) {
+        err(`${flag} needs a folder.\n\n${USAGE}`);
+        return 1;
+      }
+      const dir = path.resolve(expandHome(value));
+      if (flag === "--state-dir") stateDir = dir;
+      else config.codexHome = dir;
+    } else {
+      unknown.push(rest[i]);
+    }
+  }
   if (unknown.length) {
     err(`Unknown option: ${unknown.join(" ")}\n\n${USAGE}`);
     return 1;
   }
-  const dryRun = rest.includes("--dry-run");
-  const h = history ?? new ImageHistory({ file: path.join(config.stateDir, "history.jsonl") });
+  const h = history ?? new ImageHistory({ file: path.join(stateDir, "history.jsonl") });
   const { removed, bytes, kept } = await pruneCodexCopies({ history: h, dryRun });
 
   if (!removed.length && !kept.length) {
