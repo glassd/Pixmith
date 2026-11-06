@@ -1020,6 +1020,20 @@ export function createTools({
       if (!job && history) {
         const entry = await history.find(id);
         if (entry) job = jobFromEntry(entry);
+        // The image itself may have been deleted since; then there is nothing to return.
+        if (
+          job?.result?.path &&
+          !(await fs.access(job.result.path).then(
+            () => true,
+            () => false,
+          ))
+        ) {
+          throw new PixmithError(
+            "unknown_job",
+            `The image for job_id "${id}" was deleted (it was at ${job.result.path}). ` +
+              "Call list_images to find other images, or make it again with generate_image.",
+          );
+        }
         // Codex's copy may have been pruned since.
         if (job?.result.codexHomeCopy) {
           job.result.codexHomeCopy = await fs.access(job.result.codexHomeCopy).then(

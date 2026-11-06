@@ -396,6 +396,12 @@ test("get_image_result: a finished image can still be collected after a restart"
     const unknown = await after.callTool("get_image_result", { job_id: "never-existed" });
     assert.equal(unknown.structuredContent.error.kind, "unknown_job");
     assert.match(unknown.content[0].text, /list_images/);
+
+    // Once the PNG is deleted, the job no longer claims to be done.
+    await fs.rm(png);
+    const deleted = await after.callTool("get_image_result", { job_id: jobId });
+    assert.equal(deleted.structuredContent.error.kind, "unknown_job");
+    assert.match(deleted.content[0].text, /was deleted/);
   } finally {
     await after.close();
     await fs.rm(state, { recursive: true, force: true });
