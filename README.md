@@ -398,7 +398,7 @@ images that have been deleted since.
 
 The list comes from Pixmith's image history, `history.jsonl` in its state folder
 (`PIXMITH_STATE_DIR`, default `.pixmith/`), which gets one line per finished image and
-keeps the newest 1,000. It holds your prompts; delete the file to clear the history.
+keeps the newest 1,000 (it is trimmed back to 1,000 once it passes 1,500). It holds your prompts; delete the file to clear the history.
 Servers sharing a state folder (e.g. Claude Desktop and Claude Code) share the history.
 
 ### Structured results

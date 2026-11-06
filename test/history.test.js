@@ -107,6 +107,33 @@ test("ImageHistory: trims to the newest maxEntries once well past the cap", () =
     );
   }));
 
+test("ImageHistory: a trim keeps lines another server appended after it read the file", () =>
+  withDir(async (dir) => {
+    const file = path.join(dir, "history.jsonl");
+    const ours = new ImageHistory({ file, maxEntries: 3 });
+    const other = new ImageHistory({ file, maxEntries: 3 });
+    for (let n = 1; n <= 5; n += 1) await ours.record(await finishedJob(dir, n));
+    const snapshot = await ours.entries(); // what the trim read
+    await other.record(await finishedJob(dir, 6)); // appended before the swap
+    await ours.rewrite(snapshot);
+    assert.deepEqual(
+      (await ours.entries()).map((e) => e.job_id),
+      ["job-3", "job-4", "job-5", "job-6"],
+    );
+
+    // If the file shrank meanwhile, another server already trimmed it: leave it be.
+    const stale = [...(await ours.entries()), ...(await ours.entries())];
+    await ours.rewrite(stale);
+    assert.deepEqual(
+      (await ours.entries()).map((e) => e.job_id),
+      ["job-3", "job-4", "job-5", "job-6"],
+    );
+    assert.deepEqual(
+      (await fs.readdir(dir)).filter((f) => f.endsWith(".tmp")),
+      [],
+    );
+  }));
+
 test("ImageHistory: without a file, or with an unwritable one, nothing fails", () =>
   withDir(async (dir) => {
     const job = await finishedJob(dir, 1);
